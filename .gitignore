@@ -1,6 +1,10 @@
 # 数据库文件
 data/poker.db
 
+# git
+worktree
+
+
 # Python
 __pycache__/
 *.pyc
