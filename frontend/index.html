@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>德州扑克数据管理系统</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Source+Sans+3:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 顶部导航栏 -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <span class="logo-icon">♠</span>
+                    <h1>扑克俱乐部</h1>
+                </div>
+                <nav class="nav-tabs">
+                    <button
+                        v-for="(tab, index) in tabs"
+                        :key="index"
+                        :class="['nav-tab', { active: currentTab === index }]"
+                        @click="currentTab = index"
+                    >
+                        {{ tab }}
+                    </button>
+                </nav>
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- Tab 1: 玩家映射 -->
+            <div v-show="currentTab === 0" class="tab-content">
+                <div class="section-header">
+                    <h2>玩家映射</h2>
+                    <p class="subtitle">玩家 ID 与昵称、别名的对应关系</p>
+                </div>
+
+                <!-- 新增映射表单 -->
+                <div class="add-player-panel">
+                    <h3>新增映射</h3>
+                    <div class="add-form">
+                        <div class="form-group">
+                            <label>别名</label>
+                            <input type="text" v-model="newPlayer.alias" placeholder="输入别名">
+                        </div>
+                        <div class="form-group">
+                            <label>昵称</label>
+                            <input type="text" v-model="newPlayer.nickname" placeholder="输入昵称">
+                        </div>
+                        <button class="btn btn-primary" @click="addPlayer" :disabled="!newPlayer.alias || !newPlayer.nickname || adding">
+                            {{ adding ? '添加中...' : '添加' }}
+                        </button>
+                    </div>
+                    <div v-if="addResult" :class="['upload-result', addResult.success ? 'success' : 'error']">
+                        {{ addResult.message }}
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>昵称</th>
+                                <th>别名</th>
+                                <th>创建时间</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="player in players" :key="player.id">
+                                <td class="nickname">{{ player.nickname }}</td>
+                                <td class="alias">{{ player.alias || '-' }}</td>
+                                <td class="date">{{ formatDate(player.created_at) }}</td>
+                            </tr>
+                            <tr v-if="players.length === 0">
+                                <td colspan="3" class="empty-row">暂无数据</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Tab 2: PnL 查询 -->
+            <div v-show="currentTab === 1" class="tab-content">
+                <div class="section-header">
+                    <h2>PnL 查询</h2>
+                    <p class="subtitle">每日盈亏统计与累计曲线</p>
+                </div>
+
+                <!-- 查询条件 -->
+                <div class="query-panel">
+                    <div class="form-group">
+                        <label>日期</label>
+                        <select v-model="selectedDate" @change="loadPnl">
+                            <option v-for="date in dates" :key="date" :value="date">{{ date }}</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>玩家（可选）</label>
+                        <select v-model="selectedPlayer" @change="loadPnl">
+                            <option value="">全部玩家</option>
+                            <option v-for="p in playerList" :key="p" :value="p">{{ p }}</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" @click="loadPnl">查询</button>
+                </div>
+
+                <!-- PnL 表格 -->
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th @click="toggleSort('date')" class="sortable">
+                                    日期 <span v-if="pnlSortColumn === 'date'">{{ pnlSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                </th>
+                                <th @click="toggleSort('player_nickname')" class="sortable">
+                                    玩家 <span v-if="pnlSortColumn === 'player_nickname'">{{ pnlSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                </th>
+                                <th @click="toggleSort('total_net')" class="sortable">
+                                    净盈亏 <span v-if="pnlSortColumn === 'total_net'">{{ pnlSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="record in sortedPnlRecords" :key="record.id" :class="getPnLClass(record.total_net)">
+                                <td>{{ record.date }}</td>
+                                <td class="nickname">{{ record.player_nickname }}</td>
+                                <td class="pnl-value">{{ formatMoney(record.total_net) }}</td>
+                            </tr>
+                            <tr v-if="sortedPnlRecords.length === 0">
+                                <td colspan="3" class="empty-row">暂无数据</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- 累计曲线图 -->
+                <div class="chart-section">
+                    <h3>累计盈亏曲线</h3>
+                    <div class="chart-query-panel">
+                        <div class="form-group">
+                            <label>开始日期</label>
+                            <select v-model="chartStartDate">
+                                <option v-for="date in dates" :key="date" :value="date">{{ date }}</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>结束日期</label>
+                            <select v-model="chartEndDate">
+                                <option v-for="date in dates" :key="date" :value="date">{{ date }}</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>玩家（可选）</label>
+                            <select v-model="chartPlayer" @change="loadChart">
+                                <option value="">全部玩家</option>
+                                <option v-for="p in playerList" :key="p" :value="p">{{ p }}</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" @click="loadChart">查询曲线</button>
+                    </div>
+                    <div class="chart-container">
+                        <div id="pnlChart" style="width: 100%; height: 400px;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab 3: 对局查询 -->
+            <div v-show="currentTab === 2" class="tab-content">
+                <div class="section-header">
+                    <h2>对局查询</h2>
+                    <p class="subtitle">按条件筛选对局记录</p>
+                </div>
+                <div class="coming-soon">
+                    <div class="coming-soon-icon">🚧</div>
+                    <h3>开发中</h3>
+                    <p>该功能暂未开放，敬请期待...</p>
+                </div>
+            </div>
+
+            <!-- Tab 4: 数据上传 -->
+            <div v-show="currentTab === 3" class="tab-content">
+                <div class="section-header">
+                    <h2>数据上传</h2>
+                    <p class="subtitle">上传牌局 CSV 文件到数据库</p>
+                </div>
+
+                <div class="upload-panel">
+                    <div class="form-group">
+                        <label>日期</label>
+                        <input type="date" v-model="uploadDate" class="date-input">
+                    </div>
+                    <div class="form-group">
+                        <label>选择 CSV 文件</label>
+                        <div class="file-upload">
+                            <input type="file" id="csvFile" accept=".csv" @change="handleFileSelect">
+                            <label for="csvFile" class="file-label">
+                                <span v-if="selectedFile">{{ selectedFile.name }}</span>
+                                <span v-else>点击选择文件</span>
+                            </label>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" @click="uploadFile" :disabled="!selectedFile || !uploadDate || uploading">
+                        {{ uploading ? '上传中...' : '上传' }}
+                    </button>
+                </div>
+
+                <div v-if="uploadResult" :class="['upload-result', uploadResult.success ? 'success' : 'error']">
+                    {{ uploadResult.message }}
+                </div>
+
+                <div class="upload-help">
+                    <h4>CSV 格式要求</h4>
+                    <p>文件应包含以下列：</p>
+                    <ul>
+                        <li>player_nickname - 玩家昵称</li>
+                        <li>session_start_at - 开始时间</li>
+                        <li>session_end_at - 结束时间</li>
+                        <li>buy_in - 买入金额</li>
+                        <li>buy_out - 退出金额</li>
+                        <li>stack - 剩余筹码</li>
+                        <li>net - 净盈亏</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Tab 5: 数据删除 -->
+            <div v-show="currentTab === 4" class="tab-content">
+                <div class="section-header">
+                    <h2>数据删除</h2>
+                    <p class="subtitle">删除指定日期范围内的 PnL 和对局记录</p>
+                </div>
+
+                <div class="delete-panel">
+                    <div class="form-group">
+                        <label>开始日期</label>
+                        <input type="date" v-model="deleteStartDate" class="date-input">
+                    </div>
+                    <div class="form-group">
+                        <label>结束日期</label>
+                        <input type="date" v-model="deleteEndDate" class="date-input">
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" v-model="deletePnl">
+                            <span>删除 PnL 记录</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" v-model="deleteLedger">
+                            <span>删除对局记录</span>
+                        </label>
+                    </div>
+                    <button class="btn btn-danger" @click="deleteRecords" :disabled="!canDelete || deleting">
+                        {{ deleting ? '删除中...' : '删除' }}
+                    </button>
+                </div>
+
+                <div v-if="deleteResult" :class="['upload-result', deleteResult.success ? 'success' : 'error']">
+                    {{ deleteResult.message }}
+                </div>
+
+                <div class="delete-warning">
+                    <h4>⚠️ 危险操作警告</h4>
+                    <p>删除操作不可恢复，请谨慎操作！</p>
+                    <ul>
+                        <li>删除 PnL 记录将清除每日汇总数据</li>
+                        <li>删除对局记录将清除原始对局数据</li>
+                        <li>建议在删除前备份数据库</li>
+                    </ul>
+                </div>
+            </div>
+        </main>
+
+        <!-- 页脚 -->
+        <footer class="footer">
+            <p>德州扑克 2026 春节数据记录</p>
+        </footer>
+    </div>
+
+    <script src="vue.js"></script>
+    <script src="echarts.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

@@ -6,23 +6,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 德州扑克2026春节数据记录项目，用于维护过年期间所有用户的德州扑克盈亏统计。
 
+## Documentation
+
+- [前端功能文档](./docs/frontend.md)
+- [后端接口文档](./docs/backend.md)
+- [数据库文档](./docs/db.md)
+
 ## Directory Structure
 
 ```
 2026spring/
-├── origindata/                  # 原始数据目录（只读）
-│   └── 20260213/              # 原始账本和日志
+├── docs/                       # 文档目录
+│   ├── frontend.md            # 前端功能文档
+│   ├── backend.md             # 后端接口文档
+│   └── db.md                 # 数据库文档
+├── origindata/                # 原始数据目录（只读）
+│   └── 20260213/             # 原始账本和日志
 │   └── 20260214/
-├── daily/                      # 每日pnl汇总目录
-│   └── 20260213/
-│       └── pnl_daily.csv     # 每日用户pnl汇总表
+├── frontend/                  # 前端文件
+│   ├── index.html            # 主页面
+│   ├── app.js                # Vue 应用
+│   ├── styles.css            # 样式
+│   └── vue.js                # Vue 本地化
 ├── data/
-│   └── poker.db               # SQLite数据库
+│   └── poker.db              # SQLite数据库
 ├── scripts/
-│   └── db.py                  # 数据库操作模块
-├── .claude/skills/            # 自定义技能
-│   └── check-balance/         # 平账检查脚本
-└── CLAUDE.md                   # 本文件
+│   ├── api.py                # Flask API 服务
+│   └── db.py                 # 数据库操作模块
+├── logs/                     # 日志目录
+│   └── api.log               # API 日志
+└── CLAUDE.md                 # 本文件
 ```
 
 > ⚠️ origindata 目录为只读，保存原始数据文件，不应修改。
