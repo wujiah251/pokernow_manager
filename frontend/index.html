@@ -214,7 +214,26 @@
                         </select>
                     </div>
                     <div class="chart-container">
-                        <div id="pnlChart" style="width: 100%; height: 400px;"></div>
+                        <div id="pnlChart" style="width: 100%; height: 350px;"></div>
+                    </div>
+
+                    <!-- 累计PnL表格 -->
+                    <div class="pnl-table-wrapper" style="margin-top: 30px; margin-bottom: 30px;">
+                        <h4>所有玩家累计盈亏（截止 {{ chartEndDate }}）</h4>
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>玩家</th>
+                                    <th class="pnl-header">累计盈亏</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="player in sortedCumulativePlayers" :key="player.player_nickname">
+                                    <td>{{ player.player_nickname }}</td>
+                                    <td class="pnl-value" :class="getPnLClass(player.cumulative_net)">{{ formatMoney(player.cumulative_net) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>

@@ -80,6 +80,13 @@ const app = createApp({
             };
         });
 
+        // 图表累计PnL表格数据（按累计pnl从大到小排序）
+        const sortedCumulativePlayers = computed(() => {
+            return [...cumulativePlayers.value].sort((a, b) => {
+                return (b.cumulative_net || 0) - (a.cumulative_net || 0);
+            });
+        });
+
         // 切换排序
         const toggleSort = (column) => {
             if (pnlSortColumn.value === column) {
@@ -94,6 +101,7 @@ const app = createApp({
         const chartStartDate = ref('');
         const chartEndDate = ref('');
         const chartPlayer = ref('');
+        const cumulativePlayers = ref([]);  // 所有玩家累计PnL
 
         // 上传数据
         const uploadDate = ref('');
@@ -402,8 +410,16 @@ const app = createApp({
                             dateToValue[r.date] = r.cumulative_net;
                         });
 
-                        // 用日期顺序填充数据，缺失日期用 null
-                        const data = dates.map(d => dateToValue[d] ?? null);
+                        // 用日期顺序填充数据，缺失日期用之前的累计值（向前填充）
+                        let lastValue = null;
+                        const data = dates.map(d => {
+                            if (dateToValue[d] !== undefined) {
+                                lastValue = dateToValue[d];
+                                return lastValue;
+                            } else {
+                                return lastValue;
+                            }
+                        });
 
                         return {
                             name: player,
@@ -554,8 +570,17 @@ const app = createApp({
                             dateToValue[r.date] = r.cumulative_net;
                         });
 
-                        // 用日期顺序填充数据，缺失日期用 null
-                        const data = dates.map(d => dateToValue[d] ?? null);
+                        // 用日期顺序填充数据，缺失日期用之前的累计值（向前填充）
+                        let lastValue = null;
+                        const data = dates.map(d => {
+                            if (dateToValue[d] !== undefined) {
+                                lastValue = dateToValue[d];
+                                return lastValue;
+                            } else {
+                                // 如果没有该日期的数据，使用之前的累计值（向前填充）
+                                return lastValue;
+                            }
+                        });
 
                         return {
                             name: player,
@@ -613,6 +638,15 @@ const app = createApp({
                         },
                         series: series
                     });
+                }
+
+                // 加载截止日期的所有玩家累计PnL
+                try {
+                    const url = `/api/pnl/cumulative/to/${chartEndDate.value}`;
+                    const data = await apiGet(url);
+                    cumulativePlayers.value = data;
+                } catch (err) {
+                    console.error('加载累计PnL表格失败:', err);
                 }
             } catch (error) {
                 console.error('加载图表失败:', error);
@@ -767,6 +801,8 @@ const app = createApp({
             chartStartDate,
             chartEndDate,
             chartPlayer,
+            cumulativePlayers,
+            sortedCumulativePlayers,
             selectedChartPlayers,
             uploadDate,
             selectedFile,
