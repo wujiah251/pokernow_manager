@@ -4,6 +4,10 @@ data/poker.db
 # 
 origindata
 
+# 
+logs
+
+
 # git
 worktree
 
