@@ -87,6 +87,13 @@ const app = createApp({
             });
         });
 
+        // 累计盈亏总和
+        const totalCumulativePnL = computed(() => {
+            return cumulativePlayers.value.reduce((sum, player) => {
+                return sum + (player.cumulative_net || 0);
+            }, 0);
+        });
+
         // 切换排序
         const toggleSort = (column) => {
             if (pnlSortColumn.value === column) {

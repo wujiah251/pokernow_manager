@@ -232,6 +232,10 @@
                                     <td>{{ player.player_nickname }}</td>
                                     <td class="pnl-value" :class="getPnLClass(player.cumulative_net)">{{ formatMoney(player.cumulative_net) }}</td>
                                 </tr>
+                                <tr class="total-row">
+                                    <td>合计</td>
+                                    <td class="pnl-value" :class="getPnLClass(totalCumulativePnL)">{{ formatMoney(totalCumulativePnL) }}</td>
+                                </tr>
                             </tbody>
                         </table>
                     </div>
