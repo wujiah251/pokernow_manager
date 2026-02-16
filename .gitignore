@@ -1,6 +1,9 @@
 # 数据库文件
 data/poker.db
 
+# 
+origindata
+
 # git
 worktree
 
