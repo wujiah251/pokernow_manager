@@ -5,10 +5,26 @@
 
 import os
 import sqlite3
+import configparser
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "poker.db")
+# 全局配置
+DB_PATH = None
+
+
+def init_db_path(config_path: str = None):
+    """初始化数据库路径"""
+    global DB_PATH
+    if config_path and os.path.exists(config_path):
+        config = configparser.ConfigParser()
+        config.read(config_path)
+        base_dir = os.path.dirname(os.path.abspath(config_path))
+        DB_PATH = os.path.join(base_dir, config.get('database', 'db_path', fallback='data/poker.db'))
+        DB_PATH = os.path.abspath(DB_PATH)
+    else:
+        DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "poker.db")
+        DB_PATH = os.path.abspath(DB_PATH)
 
 def get_connection():
     """获取数据库连接"""
@@ -80,72 +96,83 @@ def init_db():
 
 def AddPlayerMapping(nickname: str, alias: str) -> tuple:
     """
-    添加玩家昵称映射，并更新历史数据中使用该别名的记录
+    添加玩家昵称映射，支持一个 nickname 多个 alias
 
     Args:
         nickname: 真实昵称
         alias: 别名
 
     Returns:
-        tuple: (success, updated_count)
+        tuple: (success, updated_count, error_msg)
     """
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
-        # 1. 插入或更新 players 表
+        # 直接插入新记录，支持同一个 nickname 多个不同的 alias
+        cursor.execute("INSERT INTO players (nickname, alias) VALUES (?, ?)", (nickname, alias))
+
+        # 2. 合并 daily_pnl 中的记录（如果 alias 已有记录）
+        # 检查 alias 是否存在于 daily_pnl（即之前用 alias 上传过数据）
         cursor.execute("""
-            INSERT INTO players (nickname, alias)
-            VALUES (?, ?)
-            ON CONFLICT(nickname) DO UPDATE SET
-                alias = excluded.alias
-        """, (nickname, alias))
+            SELECT date, total_buy_in, total_buy_out, total_stack, total_net, total_sessions
+            FROM daily_pnl WHERE player_nickname = ?
+        """, (alias,))
+        alias_records = cursor.fetchall()
 
-        # 2. 合并 daily_pnl 中的记录（如果目标昵称已存在）
-        # 先检查目标昵称是否存在
-        cursor.execute("""
-            SELECT date, SUM(total_buy_in) as total_buy_in, SUM(total_buy_out) as total_buy_out,
-                   SUM(total_stack) as total_stack, SUM(total_net) as total_net,
-                   SUM(total_sessions) as total_sessions
-            FROM daily_pnl
-            WHERE player_nickname IN (?, ?)
-            GROUP BY date
-        """, (nickname, alias))
-        merged_records = cursor.fetchall()
+        updated_pnl = 0
 
-        # 删除原有的两条记录
-        cursor.execute("DELETE FROM daily_pnl WHERE player_nickname IN (?, ?)", (nickname, alias))
+        if alias_records:
+            # 如果 alias 有记录，合并到 nickname
+            for row in alias_records:
+                # 检查 nickname 在同一天是否有记录
+                cursor.execute("""
+                    SELECT id FROM daily_pnl WHERE date = ? AND player_nickname = ?
+                """, (row['date'], nickname))
+                existing = cursor.fetchone()
 
-        # 插入合并后的记录
-        for row in merged_records:
-            cursor.execute("""
-                INSERT INTO daily_pnl (date, player_nickname, total_buy_in, total_buy_out, total_stack, total_net, total_sessions)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (row['date'], nickname, row['total_buy_in'], row['total_buy_out'],
-                  row['total_stack'], row['total_net'], row['total_sessions']))
+                if existing:
+                    # 累加到现有记录
+                    cursor.execute("""
+                        UPDATE daily_pnl SET
+                            total_buy_in = total_buy_in + ?,
+                            total_buy_out = total_buy_out + ?,
+                            total_stack = total_stack + ?,
+                            total_net = total_net + ?,
+                            total_sessions = total_sessions + ?
+                        WHERE date = ? AND player_nickname = ?
+                    """, (row['total_buy_in'], row['total_buy_out'], row['total_stack'],
+                          row['total_net'], row['total_sessions'], row['date'], nickname))
+                else:
+                    # 插入新记录
+                    cursor.execute("""
+                        INSERT INTO daily_pnl (date, player_nickname, total_buy_in, total_buy_out, total_stack, total_net, total_sessions)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (row['date'], nickname, row['total_buy_in'], row['total_buy_out'],
+                          row['total_stack'], row['total_net'], row['total_sessions']))
 
-        updated_pnl = len(merged_records)
+            # 删除 alias 的记录
+            cursor.execute("DELETE FROM daily_pnl WHERE player_nickname = ?", (alias,))
+            updated_pnl = len(alias_records)
 
         # 3. 合并 ledger 中的记录
         cursor.execute("""
-            UPDATE ledger
-            SET player_nickname = ?
-            WHERE player_nickname = ?
+            UPDATE ledger SET player_nickname = ? WHERE player_nickname = ?
         """, (nickname, alias))
 
         cursor.execute("""
-            SELECT COUNT(*) as cnt FROM ledger WHERE player_nickname = ?
-        """, (alias,))
+            SELECT changes() as cnt
+        """)
         row = cursor.fetchone()
         updated_ledger = row['cnt'] if row else 0
 
         conn.commit()
-        return (True, updated_pnl + updated_ledger)
+        return (True, updated_pnl + updated_ledger, None)
 
     except Exception as e:
         conn.rollback()
         print(f"添加玩家映射失败: {e}")
-        return (False, 0)
+        return (False, 0, str(e))
     finally:
         conn.close()
 
@@ -162,6 +189,35 @@ def GetPlayerByNickname(nickname: str) -> Optional[Dict[str, Any]]:
         conn.close()
 
 
+def ResolvePlayerNickname(alias: str) -> Optional[str]:
+    """
+    将 alias 解析为真实的 nickname（区分大小写）
+
+    Args:
+        alias: 必须是 players 表中存在的 alias
+
+    Returns:
+        Optional[str: 真实的 nickname，如果 alias 不存在则返回 None
+    """
+    if not alias:
+        return None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 只通过 alias 查找（区分大小写）
+        cursor.execute("SELECT nickname FROM players WHERE alias = ? COLLATE BINARY", (alias,))
+        row = cursor.fetchone()
+        if row:
+            return row['nickname']
+
+        # alias 不存在
+        return None
+    finally:
+        conn.close()
+
+
 def GetAllPlayers() -> List[Dict[str, Any]]:
     """获取所有玩家信息"""
     conn = get_connection()
@@ -169,6 +225,117 @@ def GetAllPlayers() -> List[Dict[str, Any]]:
     try:
         cursor.execute("SELECT * FROM players ORDER BY nickname")
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def DeletePlayerMapping(nickname: str) -> tuple:
+    """
+    删除玩家映射
+
+    Args:
+        nickname: 要删除的昵称
+
+    Returns:
+        tuple: (success, deleted_count)
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 删除 players 表中的记录
+        cursor.execute("DELETE FROM players WHERE nickname = ?", (nickname,))
+
+        conn.commit()
+        print(f"删除玩家映射: {nickname}")
+        return (True, cursor.rowcount)
+
+    except Exception as e:
+        conn.rollback()
+        print(f"删除玩家映射失败: {e}")
+        return (False, 0)
+    finally:
+        conn.close()
+
+
+def RenamePlayer(old_nickname: str, new_nickname: str) -> tuple:
+    """
+    重命名玩家昵称，并合并所有历史记录到目标昵称
+
+    Args:
+        old_nickname: 原昵称
+        new_nickname: 目标昵称
+
+    Returns:
+        tuple: (success, updated_count)
+    """
+    if old_nickname == new_nickname:
+        return (True, 0)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 1. 获取 old_nickname 对应的 alias
+        cursor.execute("SELECT alias FROM players WHERE nickname = ?", (old_nickname,))
+        old_row = cursor.fetchone()
+        old_alias = old_row['alias'] if old_row else None
+
+        # 2. 合并 daily_pnl 表：将 old_nickname 的数据加到 new_nickname 上
+        # 先获取 old_nickname 的所有日期数据
+        cursor.execute("""
+            SELECT date, total_buy_in, total_buy_out, total_stack, total_net, total_sessions
+            FROM daily_pnl WHERE player_nickname = ?
+        """, (old_nickname,))
+        old_pnl_records = cursor.fetchall()
+
+        for row in old_pnl_records:
+            # 检查目标昵称在该日期是否已有记录
+            cursor.execute("""
+                SELECT total_buy_in, total_buy_out, total_stack, total_net, total_sessions
+                FROM daily_pnl WHERE date = ? AND player_nickname = ?
+            """, (row['date'], new_nickname))
+            existing = cursor.fetchone()
+
+            if existing:
+                # 累加到现有记录
+                cursor.execute("""
+                    UPDATE daily_pnl SET
+                        total_buy_in = total_buy_in + ?,
+                        total_buy_out = total_buy_out + ?,
+                        total_stack = total_stack + ?,
+                        total_net = total_net + ?,
+                        total_sessions = total_sessions + ?
+                    WHERE date = ? AND player_nickname = ?
+                """, (row['total_buy_in'], row['total_buy_out'], row['total_stack'],
+                      row['total_net'], row['total_sessions'], row['date'], new_nickname))
+            else:
+                # 插入新记录
+                cursor.execute("""
+                    INSERT INTO daily_pnl (date, player_nickname, total_buy_in, total_buy_out, total_stack, total_net, total_sessions)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (row['date'], new_nickname, row['total_buy_in'], row['total_buy_out'],
+                      row['total_stack'], row['total_net'], row['total_sessions']))
+
+        # 3. 删除 old_nickname 的 daily_pnl 记录
+        cursor.execute("DELETE FROM daily_pnl WHERE player_nickname = ?", (old_nickname,))
+
+        # 4. 更新 ledger 表
+        cursor.execute("UPDATE ledger SET player_nickname = ? WHERE player_nickname = ?", (new_nickname, old_nickname))
+        updated_ledger = cursor.rowcount
+
+        # 5. 更新 players 表：删除 old_nickname 记录
+        cursor.execute("DELETE FROM players WHERE nickname = ?", (old_nickname,))
+
+        conn.commit()
+        total_updated = len(old_pnl_records) + updated_ledger
+        print(f"合并玩家: {old_nickname} -> {new_nickname}, 更新了 {total_updated} 条记录")
+        return (True, total_updated)
+
+    except Exception as e:
+        conn.rollback()
+        print(f"合并玩家失败: {e}")
+        return (False, 0)
     finally:
         conn.close()
 
@@ -184,23 +351,111 @@ def GetPlayerAliases() -> List[Dict[str, Any]]:
         conn.close()
 
 
+def EnsurePlayerExists(nickname: str) -> bool:
+    """
+    确保玩家存在于 players 表中，如果不存在则自动添加
+
+    Args:
+        nickname: 玩家昵称
+
+    Returns:
+        bool: 是否成功（存在或添加成功）
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        # 检查是否已存在
+        cursor.execute("SELECT id FROM players WHERE nickname = ?", (nickname,))
+        if cursor.fetchone():
+            return True
+
+        # 不存在则添加
+        cursor.execute("INSERT INTO players (nickname) VALUES (?)", (nickname,))
+        conn.commit()
+        print(f"自动添加新玩家: {nickname}")
+        return True
+    except Exception as e:
+        print(f"自动添加玩家失败: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def CheckPlayerMapping(aliases: List[str]) -> List[str]:
+    """
+    检查哪些 alias 没有在 players 表中映射（区分大小写）
+
+    Args:
+        aliases: 玩家别名列表
+
+    Returns:
+        List[str]: 没有映射的玩家别名列表
+    """
+    if not aliases:
+        return []
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 只获取所有 alias（区分大小写）
+        cursor.execute("SELECT alias FROM players WHERE alias IS NOT NULL AND alias != '' COLLATE BINARY")
+        all_aliases = {row['alias'] for row in cursor.fetchall()}
+
+        # 找出未映射的 alias
+        unmapped = [a for a in aliases if a not in all_aliases]
+        return unmapped
+
+    finally:
+        conn.close()
+
+
+def EnsurePlayersExist(nicknames: List[str]) -> List[str]:
+    """
+    批量确保玩家存在，返回新添加的玩家列表
+
+    Args:
+        nicknames: 玩家昵称列表
+
+    Returns:
+        List[str]: 新添加的玩家昵称列表
+    """
+    new_players = []
+    for nickname in nicknames:
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT id FROM players WHERE nickname = ?", (nickname,))
+            if not cursor.fetchone():
+                cursor.execute("INSERT INTO players (nickname) VALUES (?)", (nickname,))
+                conn.commit()
+                new_players.append(nickname)
+                print(f"自动添加新玩家: {nickname}")
+        except Exception as e:
+            print(f"自动添加玩家 {nickname} 失败: {e}")
+        finally:
+            conn.close()
+    return new_players
+
+
 # ========== 每日PNL数据接口 ==========
 
 def SaveDailyPnl(date: str, player_nickname: str, total_buy_in: int, total_buy_out: int,
                  total_stack: int, total_net: int, total_sessions: int) -> bool:
-    """保存或更新每日PNL数据"""
+    """保存或累加每日PNL数据"""
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # 使用 INSERT ... ON CONFLICT 累加数据
         cursor.execute("""
             INSERT INTO daily_pnl (date, player_nickname, total_buy_in, total_buy_out, total_stack, total_net, total_sessions)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date, player_nickname) DO UPDATE SET
-                total_buy_in = excluded.total_buy_in,
-                total_buy_out = excluded.total_buy_out,
-                total_stack = excluded.total_stack,
-                total_net = excluded.total_net,
-                total_sessions = excluded.total_sessions
+                total_buy_in = total_buy_in + excluded.total_buy_in,
+                total_buy_out = total_buy_out + excluded.total_buy_out,
+                total_stack = total_stack + excluded.total_stack,
+                total_net = total_net + excluded.total_net,
+                total_sessions = total_sessions + excluded.total_sessions
         """, (date, player_nickname, total_buy_in, total_buy_out, total_stack, total_net, total_sessions))
         conn.commit()
         return True
@@ -247,13 +502,11 @@ def GetAllDates() -> List[str]:
 # ========== 原始账本数据接口 ==========
 
 def SaveLedger(date: str, records: List[Dict[str, Any]], source_file: str = None) -> bool:
-    """批量保存原始账本数据"""
+    """批量保存原始账本数据（累加模式，不删除已有记录）"""
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # 先删除当日数据
-        cursor.execute("DELETE FROM ledger WHERE date = ?", (date,))
-        # 批量插入
+        # 直接插入新记录，累加到已有记录
         for r in records:
             cursor.execute("""
                 INSERT INTO ledger (date, player_nickname, player_id, session_start_at, session_end_at,
@@ -341,7 +594,7 @@ def ImportLedgerFiles(date: str, ledger_dir: str, alias_map: Dict[str, str] = No
 
 
 def CalculateDailyPnl(date: str) -> bool:
-    """根据ledger数据计算每日PNL并保存（按昵称合并）"""
+    """根据ledger数据计算每日PNL并保存（按昵称合并，累加到现有记录）"""
     conn = get_connection()
     cursor = conn.cursor()
     try:

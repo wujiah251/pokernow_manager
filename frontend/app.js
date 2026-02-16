@@ -16,9 +16,13 @@ const app = createApp({
         const selectedDate = ref('');
         const selectedPlayer = ref('');
         const pnlRecords = ref([]);
+        const pnlCumulative = ref({});  // 累计PnL
         const pnlSortColumn = ref('total_net');  // 默认按净盈亏排序
         const pnlSortDirection = ref('desc');    // 默认降序
         let pnlChart = null;
+
+        // 曲线多选玩家
+        const selectedChartPlayers = ref([]);
 
         // 排序后的 PnL 记录
         const sortedPnlRecords = computed(() => {
@@ -27,8 +31,20 @@ const app = createApp({
             const dir = pnlSortDirection.value;
 
             records.sort((a, b) => {
-                let valA = a[col];
-                let valB = b[col];
+                let valA, valB;
+
+                // cumulative_net 需要从 pnlCumulative 映射中获取
+                if (col === 'cumulative_net') {
+                    valA = pnlCumulative.value[a.player_nickname];
+                    valB = pnlCumulative.value[b.player_nickname];
+                } else {
+                    valA = a[col];
+                    valB = b[col];
+                }
+
+                // 处理 undefined 或 null
+                if (valA === undefined || valA === null) valA = 0;
+                if (valB === undefined || valB === null) valB = 0;
 
                 // 数字类型排序
                 if (typeof valA === 'number' && typeof valB === 'number') {
@@ -46,13 +62,31 @@ const app = createApp({
             return records;
         });
 
+        // 合计行数据
+        const pnlTotal = computed(() => {
+            const records = pnlRecords.value;
+            if (!records || records.length === 0) return null;
+
+            let totalNet = 0;
+            records.forEach(r => {
+                totalNet += (r.total_net || 0);
+            });
+
+            return {
+                date: '',
+                player_nickname: '合计',
+                total_net: totalNet,
+                cumulative_net: null
+            };
+        });
+
         // 切换排序
         const toggleSort = (column) => {
             if (pnlSortColumn.value === column) {
                 pnlSortDirection.value = pnlSortDirection.value === 'asc' ? 'desc' : 'asc';
             } else {
                 pnlSortColumn.value = column;
-                pnlSortDirection.value = column === 'total_net' ? 'desc' : 'asc';
+                pnlSortDirection.value = (column === 'total_net' || column === 'cumulative_net') ? 'desc' : 'asc';
             }
         };
 
@@ -79,6 +113,17 @@ const app = createApp({
         const newPlayer = ref({ nickname: '', alias: '' });
         const adding = ref(false);
         const addResult = ref(null);
+
+        // 编辑玩家
+        const showEditDialog = ref(false);
+        const editPlayer = ref({ nickname: '', alias: '' });
+        const saving = ref(false);
+        const editResult = ref(null);
+
+        // 合并玩家
+        const mergeForm = ref({ oldNickname: '', newNickname: '' });
+        const merging = ref(false);
+        const mergeResult = ref(null);
 
         // ========== 计算属性 ==========
         const canDelete = computed(() => {
@@ -181,6 +226,80 @@ const app = createApp({
             }
         };
 
+        // 合并玩家
+        const mergePlayerData = async () => {
+            if (!mergeForm.value.oldNickname || !mergeForm.value.newNickname) return;
+
+            // 二次确认
+            if (!confirm(`确定要将 "${mergeForm.value.oldNickname}" 的所有历史记录合并到 "${mergeForm.value.newNickname}" 吗？此操作不可恢复！`)) {
+                return;
+            }
+
+            merging.value = true;
+            mergeResult.value = null;
+
+            try {
+                const response = await fetch('/api/players/rename', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        old_nickname: mergeForm.value.oldNickname,
+                        new_nickname: mergeForm.value.newNickname
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    mergeResult.value = {
+                        success: true,
+                        message: `合并成功！更新了 ${result.updated} 条记录`
+                    };
+                    // 刷新玩家列表
+                    await loadPlayers();
+                    // 清空表单
+                    mergeForm.value = { oldNickname: '', newNickname: '' };
+                } else {
+                    mergeResult.value = {
+                        success: false,
+                        message: `合并失败: ${result.error}`
+                    };
+                }
+            } catch (error) {
+                mergeResult.value = {
+                    success: false,
+                    message: `合并失败: ${error.message}`
+                };
+            } finally {
+                merging.value = false;
+            }
+        };
+
+        // 删除玩家映射
+        const deletePlayerMapping = async (nickname) => {
+            if (!confirm(`确定要删除玩家 "${nickname}" 的映射吗？`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/players/${encodeURIComponent(nickname)}`, {
+                    method: 'DELETE'
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    alert('删除成功！');
+                    // 刷新玩家列表
+                    await loadPlayers();
+                } else {
+                    alert(`删除失败: ${result.error}`);
+                }
+            } catch (error) {
+                alert(`删除失败: ${error.message}`);
+            }
+        };
+
         const loadDates = async () => {
             try {
                 dates.value = await apiGet('/api/dates');
@@ -206,11 +325,32 @@ const app = createApp({
                 }
                 pnlRecords.value = await apiGet(url);
 
+                // 加载累计PnL数据
+                await loadCumulative();
+
                 // 加载图表数据
                 await nextTick();
                 loadChart();
             } catch (error) {
                 console.error('加载 PnL 失败:', error);
+            }
+        };
+
+        const loadCumulative = async () => {
+            if (!selectedDate.value) return;
+
+            try {
+                const url = `/api/pnl/cumulative/to/${selectedDate.value}`;
+                const data = await apiGet(url);
+
+                // 转换为 player_nickname -> cumulative_net 的映射
+                const cumMap = {};
+                data.forEach(d => {
+                    cumMap[d.player_nickname] = d.cumulative_net;
+                });
+                pnlCumulative.value = cumMap;
+            } catch (error) {
+                console.error('加载累计PnL失败:', error);
             }
         };
 
@@ -229,7 +369,99 @@ const app = createApp({
                 }
                 pnlChart = echarts.init(chartDom);
 
-                if (chartPlayer.value) {
+                // 如果有选中的玩家，使用多选API
+                if (selectedChartPlayers.value && selectedChartPlayers.value.length > 0) {
+                    const url = `/api/pnl/range/selected?start=${startDate}&end=${endDate}&players=${encodeURIComponent(selectedChartPlayers.value.join(','))}`;
+                    const result = await apiGet(url);
+
+                    if (!result || !result.dates || result.dates.length === 0) {
+                        pnlChart.setOption({
+                            title: { text: '暂无数据', left: 'center' }
+                        });
+                        return;
+                    }
+
+                    const dates = result.dates;
+                    const players = result.players;
+
+                    // 按累计pnl排序（从大到小）
+                    const playerTotals = [];
+                    for (const [player, records] of Object.entries(players)) {
+                        const total = records.length > 0 ? records[records.length - 1].cumulative_net : 0;
+                        playerTotals.push({ player, total });
+                    }
+                    playerTotals.sort((a, b) => b.total - a.total);
+                    const sortedPlayers = playerTotals.map(p => p.player);
+
+                    // 为每个玩家生成一条曲线
+                    const series = sortedPlayers.map((player) => {
+                        const playerRecords = players[player] || [];
+                        // 构建日期到累计值的映射
+                        const dateToValue = {};
+                        playerRecords.forEach(r => {
+                            dateToValue[r.date] = r.cumulative_net;
+                        });
+
+                        // 用日期顺序填充数据，缺失日期用 null
+                        const data = dates.map(d => dateToValue[d] ?? null);
+
+                        return {
+                            name: player,
+                            type: 'line',
+                            smooth: true,
+                            symbol: 'circle',
+                            symbolSize: 6,
+                            data: data
+                        };
+                    });
+
+                    pnlChart.setOption({
+                        title: {
+                            text: '选定玩家累计盈亏曲线',
+                            left: 'center',
+                            textStyle: { fontFamily: "'Playfair Display', serif", fontSize: 18 }
+                        },
+                        tooltip: {
+                            trigger: 'axis',
+                            backgroundColor: 'rgba(13, 77, 43, 0.9)',
+                            textStyle: { fontFamily: "'Source Sans 3', sans-serif", color: '#fff' },
+                            formatter: (params) => {
+                                let html = `${params[0].name}<br/>`;
+                                params.forEach(p => {
+                                    if (p.value !== null && p.value !== undefined) {
+                                        html += `${p.marker} ${p.seriesName}: <b>${p.value.toLocaleString('zh-CN')}</b><br/>`;
+                                    }
+                                });
+                                return html;
+                            }
+                        },
+                        legend: {
+                            type: 'scroll',
+                            bottom: 10,
+                            textStyle: { fontFamily: "'Source Sans 3', sans-serif", fontSize: 12 },
+                            data: sortedPlayers
+                        },
+                        grid: { left: 60, right: 40, top: 60, bottom: 80 },
+                        xAxis: {
+                            type: 'category',
+                            data: dates,
+                            boundaryGap: false,
+                            axisLine: { lineStyle: { color: '#ddd' } },
+                            axisLabel: { color: '#888', fontFamily: "'Source Sans 3', sans-serif" }
+                        },
+                        yAxis: {
+                            type: 'value',
+                            axisLine: { show: false },
+                            splitLine: { lineStyle: { color: 'rgba(0,0,0,0.05)' } },
+                            axisLabel: {
+                                color: '#888',
+                                fontFamily: "'Source Sans 3', sans-serif",
+                                formatter: (v) => v.toLocaleString('zh-CN')
+                            }
+                        },
+                        series: series
+                    });
+                } else if (chartPlayer.value) {
                     // 选择特定玩家：使用原有 API
                     const url = `/api/pnl/range/cumulative?start=${startDate}&end=${endDate}&player=${encodeURIComponent(chartPlayer.value)}`;
                     const data = await apiGet(url);
@@ -303,11 +535,22 @@ const app = createApp({
                     const dates = result.dates;
                     const players = result.players;
 
-                    // 为每个玩家生成一条曲线
-                    const series = Object.keys(players).map((player, idx) => {
+                    // 计算每个玩家的总累计pnl
+                    const playerTotals = [];
+                    for (const [player, records] of Object.entries(players)) {
+                        const total = records.length > 0 ? records[records.length - 1].cumulative_net : 0;
+                        playerTotals.push({ player, total });
+                    }
+                    // 按累计pnl从大到小排序
+                    playerTotals.sort((a, b) => b.total - a.total);
+                    const sortedPlayerNames = playerTotals.map(p => p.player);
+
+                    // 按排序顺序生成曲线
+                    const series = sortedPlayerNames.map((player) => {
+                        const playerRecords = players[player];
                         // 构建日期到累计值的映射
                         const dateToValue = {};
-                        players[player].forEach(r => {
+                        playerRecords.forEach(r => {
                             dateToValue[r.date] = r.cumulative_net;
                         });
 
@@ -347,7 +590,8 @@ const app = createApp({
                         legend: {
                             type: 'scroll',
                             bottom: 10,
-                            textStyle: { fontFamily: "'Source Sans 3', sans-serif", fontSize: 12 }
+                            textStyle: { fontFamily: "'Source Sans 3', sans-serif", fontSize: 12 },
+                            data: sortedPlayerNames
                         },
                         grid: { left: 60, right: 40, top: 60, bottom: 80 },
                         xAxis: {
@@ -391,6 +635,30 @@ const app = createApp({
             uploadResult.value = null;
 
             try {
+                // 先预检查
+                const formData = new FormData();
+                formData.append('file', selectedFile.value);
+
+                const checkResponse = await fetch('/api/ledger/precheck', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const checkResult = await checkResponse.json();
+
+                // 如果有没有映射的玩家，提示用户
+                if (checkResult.has_unmapped) {
+                    const confirmUpload = confirm(`警告：以下玩家尚未添加到映射表：\n${checkResult.unmapped_players.join(', ')}\n\n是否仍要上传？`);
+                    if (!confirmUpload) {
+                        uploading.value = false;
+                        return;
+                    }
+                }
+
+                // 重新设置文件指针，因为预检查已经读取了文件
+                selectedFile.value = document.getElementById('csvFile').files[0];
+
+                // 上传文件
                 const result = await apiPost('/api/ledger/upload', {
                     file: selectedFile.value,
                     date: uploadDate.value
@@ -490,6 +758,8 @@ const app = createApp({
             selectedDate,
             selectedPlayer,
             pnlRecords,
+            pnlTotal,
+            pnlCumulative,
             sortedPnlRecords,
             pnlSortColumn,
             pnlSortDirection,
@@ -497,6 +767,7 @@ const app = createApp({
             chartStartDate,
             chartEndDate,
             chartPlayer,
+            selectedChartPlayers,
             uploadDate,
             selectedFile,
             uploading,
@@ -511,6 +782,9 @@ const app = createApp({
             newPlayer,
             adding,
             addResult,
+            mergeForm,
+            merging,
+            mergeResult,
 
             // 方法
             formatDate,
@@ -519,6 +793,8 @@ const app = createApp({
             loadPnl,
             loadChart,
             addPlayer,
+            mergePlayerData,
+            deletePlayerMapping,
             handleFileSelect,
             uploadFile,
             deleteRecords

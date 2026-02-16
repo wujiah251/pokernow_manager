@@ -434,6 +434,8 @@ body {
     border: 2px solid var(--gray-light);
     border-radius: 8px;
     font-size: 14px;
+    min-width: 140px;
+    width: 140px;
 }
 
 .upload-result {
@@ -541,6 +543,23 @@ body {
     transform: none;
 }
 
+.btn-warning {
+    background: #f57c00;
+    color: var(--white);
+}
+
+.btn-warning:hover {
+    background: #ef6c00;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(245, 124, 0, 0.3);
+}
+
+.btn-warning:disabled {
+    background: var(--gray);
+    cursor: not-allowed;
+    transform: none;
+}
+
 .delete-warning {
     background: #fff3e0;
     border: 1px solid #ff9800;
@@ -593,6 +612,124 @@ body {
 .footer p {
     font-size: 14px;
     opacity: 0.8;
+}
+
+/* ========== 合计行样式 ========== */
+.total-row {
+    font-weight: 600;
+    background-color: #f5f5f5 !important;
+    border-top: 2px solid var(--primary-green);
+}
+
+.total-row .nickname {
+    color: var(--primary-green);
+}
+
+/* ========== 多选面板样式 ========== */
+.multi-select-panel {
+    margin-bottom: 16px;
+    padding: 12px;
+    background: var(--white);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+}
+
+.multi-select-panel label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    color: var(--dark);
+}
+
+.multi-select-panel select {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+/* ========== 弹窗样式 ========== */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal {
+    background: var(--white);
+    border-radius: 12px;
+    padding: 24px;
+    width: 90%;
+    max-width: 400px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+}
+
+.modal h3 {
+    margin: 0 0 20px;
+    font-family: "'Playfair Display', serif";
+    font-size: 20px;
+    color: var(--primary-green);
+}
+
+.modal-form {
+    margin-bottom: 20px;
+}
+
+.modal-form .form-group {
+    margin-bottom: 16px;
+}
+
+.modal-form input {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+    box-sizing: border-box;
+}
+
+.modal-form input:disabled {
+    background: #f5f5f5;
+    color: #888;
+}
+
+.modal-form .help-text {
+    font-size: 12px;
+    color: #888;
+    margin: 0;
+}
+
+.modal-form .help-text.warning {
+    color: #e74c3c;
+    font-weight: 500;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+}
+
+.btn-small {
+    padding: 4px 12px;
+    font-size: 12px;
+    background: var(--primary-green);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.btn-small:hover {
+    background: #0a3d24;
 }
 
 /* ========== 响应式 ========== */

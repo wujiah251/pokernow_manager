@@ -61,6 +61,34 @@
                     </div>
                 </div>
 
+                <!-- 合并/重命名玩家 -->
+                <div class="add-player-panel">
+                    <h3>合并玩家</h3>
+                    <p class="subtitle">将一个玩家的所有历史记录合并到另一个玩家</p>
+                    <div class="add-form">
+                        <div class="form-group">
+                            <label>原昵称</label>
+                            <select v-model="mergeForm.oldNickname">
+                                <option value="">选择要合并的玩家</option>
+                                <option v-for="p in playerList" :key="p" :value="p">{{ p }}</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>目标昵称</label>
+                            <select v-model="mergeForm.newNickname">
+                                <option value="">选择目标玩家</option>
+                                <option v-for="p in playerList" :key="p" :value="p">{{ p }}</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-warning" @click="mergePlayerData" :disabled="!mergeForm.oldNickname || !mergeForm.newNickname || merging">
+                            {{ merging ? '合并中...' : '合并' }}
+                        </button>
+                    </div>
+                    <div v-if="mergeResult" :class="['upload-result', mergeResult.success ? 'success' : 'error']">
+                        {{ mergeResult.message }}
+                    </div>
+                </div>
+
                 <div class="table-container">
                     <table class="data-table">
                         <thead>
@@ -68,6 +96,7 @@
                                 <th>昵称</th>
                                 <th>别名</th>
                                 <th>创建时间</th>
+                                <th>操作</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -75,9 +104,12 @@
                                 <td class="nickname">{{ player.nickname }}</td>
                                 <td class="alias">{{ player.alias || '-' }}</td>
                                 <td class="date">{{ formatDate(player.created_at) }}</td>
+                                <td>
+                                    <button class="btn btn-danger btn-small" @click="deletePlayerMapping(player.nickname)">删除</button>
+                                </td>
                             </tr>
                             <tr v-if="players.length === 0">
-                                <td colspan="3" class="empty-row">暂无数据</td>
+                                <td colspan="4" class="empty-row">暂无数据</td>
                             </tr>
                         </tbody>
                     </table>
@@ -123,6 +155,9 @@
                                 <th @click="toggleSort('total_net')" class="sortable">
                                     净盈亏 <span v-if="pnlSortColumn === 'total_net'">{{ pnlSortDirection === 'asc' ? '↑' : '↓' }}</span>
                                 </th>
+                                <th @click="toggleSort('cumulative_net')" class="sortable">
+                                    累计盈亏 <span v-if="pnlSortColumn === 'cumulative_net'">{{ pnlSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                </th>
                             </tr>
                         </thead>
                         <tbody>
@@ -130,9 +165,17 @@
                                 <td>{{ record.date }}</td>
                                 <td class="nickname">{{ record.player_nickname }}</td>
                                 <td class="pnl-value">{{ formatMoney(record.total_net) }}</td>
+                                <td class="pnl-value">{{ pnlCumulative[record.player_nickname] !== undefined ? formatMoney(pnlCumulative[record.player_nickname]) : '-' }}</td>
+                            </tr>
+                            <!-- 合计行 -->
+                            <tr v-if="pnlTotal" class="total-row">
+                                <td></td>
+                                <td class="nickname">{{ pnlTotal.player_nickname }}</td>
+                                <td class="pnl-value" :class="getPnLClass(pnlTotal.total_net)">{{ formatMoney(pnlTotal.total_net) }}</td>
+                                <td>-</td>
                             </tr>
                             <tr v-if="sortedPnlRecords.length === 0">
-                                <td colspan="3" class="empty-row">暂无数据</td>
+                                <td colspan="4" class="empty-row">暂无数据</td>
                             </tr>
                         </tbody>
                     </table>
@@ -155,13 +198,20 @@
                             </select>
                         </div>
                         <div class="form-group">
-                            <label>玩家（可选）</label>
-                            <select v-model="chartPlayer" @change="loadChart">
+                            <label>单玩家</label>
+                            <select v-model="chartPlayer" @change="selectedChartPlayers = []">
                                 <option value="">全部玩家</option>
                                 <option v-for="p in playerList" :key="p" :value="p">{{ p }}</option>
                             </select>
                         </div>
                         <button class="btn btn-primary" @click="loadChart">查询曲线</button>
+                    </div>
+                    <!-- 多选玩家 -->
+                    <div class="multi-select-panel">
+                        <label>多选玩家（按住Ctrl/Command多选）：</label>
+                        <select multiple v-model="selectedChartPlayers" @change="chartPlayer = ''" style="height: 120px;">
+                            <option v-for="p in playerList" :key="p" :value="p">{{ p }}</option>
+                        </select>
                     </div>
                     <div class="chart-container">
                         <div id="pnlChart" style="width: 100%; height: 400px;"></div>

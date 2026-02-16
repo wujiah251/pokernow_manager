@@ -8,9 +8,18 @@ import sys
 import csv
 import io
 import logging
+import argparse
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import db
+
+# 解析命令行参数
+parser = argparse.ArgumentParser()
+parser.add_argument('-c', '--config', type=str, help='配置文件路径')
+args = parser.parse_args()
+
+# 初始化数据库路径
+db.init_db_path(args.config)
 
 # 配置日志
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
@@ -62,10 +71,11 @@ def add_player():
         return jsonify({'error': 'alias is required'}), 400
 
     try:
-        # 检查 alias 是否已被其他 nickname 使用
+        # 检查 alias 是否已被其他 nickname 使用（区分大小写）
         conn = db.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT nickname, alias FROM players WHERE alias = ? AND nickname != ?", (alias, nickname))
+        # 直接用字符串拼接 alias，避免参数化查询的默认大小写问题
+        cursor.execute(f"SELECT nickname, alias FROM players WHERE alias = '{alias}' COLLATE BINARY AND nickname != ?", (nickname,))
         existing = cursor.fetchone()
         conn.close()
 
@@ -75,15 +85,63 @@ def add_player():
 
         # 使用新的映射函数，会自动更新历史数据
         logger.info(f"添加玩家映射: {alias} -> {nickname}")
-        success, updated = db.AddPlayerMapping(nickname, alias)
+        success, updated, error_msg = db.AddPlayerMapping(nickname, alias)
         if success:
             logger.info(f"添加成功: {alias} -> {nickname}, 更新了 {updated} 条记录")
             return jsonify({'success': True, 'updated': updated})
         else:
-            logger.error(f"添加失败: {alias} -> {nickname}")
-            return jsonify({'error': '添加失败'}), 500
+            logger.error(f"添加失败: {alias} -> {nickname}, {error_msg}")
+            return jsonify({'error': error_msg or '添加失败'}), 500
     except Exception as e:
         logger.exception(f"添加玩家映射异常: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/players/rename', methods=['POST'])
+def rename_player():
+    """重命名玩家昵称"""
+    data = request.get_json()
+    old_nickname = data.get('old_nickname')
+    new_nickname = data.get('new_nickname')
+
+    if not old_nickname or not new_nickname:
+        logger.warning(f"重命名玩家失败: 参数为空")
+        return jsonify({'error': 'old_nickname and new_nickname are required'}), 400
+
+    if old_nickname == new_nickname:
+        return jsonify({'success': True, 'updated': 0})
+
+    try:
+        logger.info(f"重命名玩家: {old_nickname} -> {new_nickname}")
+        success, updated = db.RenamePlayer(old_nickname, new_nickname)
+        if success:
+            logger.info(f"重命名成功: {old_nickname} -> {new_nickname}, 更新了 {updated} 条记录")
+            return jsonify({'success': True, 'updated': updated})
+        else:
+            logger.error(f"重命名失败: {old_nickname} -> {new_nickname}")
+            return jsonify({'error': '重命名失败'}), 500
+    except Exception as e:
+        logger.exception(f"重命名玩家异常: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/players/<nickname>', methods=['DELETE'])
+def delete_player(nickname):
+    """删除玩家映射"""
+    if not nickname:
+        return jsonify({'error': 'nickname is required'}), 400
+
+    try:
+        logger.info(f"删除玩家映射: {nickname}")
+        success, deleted = db.DeletePlayerMapping(nickname)
+        if success:
+            logger.info(f"删除成功: {nickname}")
+            return jsonify({'success': True, 'deleted': deleted})
+        else:
+            logger.error(f"删除失败: {nickname}")
+            return jsonify({'error': '删除失败'}), 500
+    except Exception as e:
+        logger.exception(f"删除玩家异常: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -291,6 +349,134 @@ def get_range_all_players_pnl():
         conn.close()
 
 
+@app.route('/api/pnl/cumulative/to/<end_date>', methods=['GET'])
+def get_cumulative_pnl_to_date(end_date):
+    """获取从最早日期到指定日期的累计PnL（用于表格累计列）"""
+    player = request.args.get('player')
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 获取最早日期
+        cursor.execute("SELECT MIN(date) as min_date FROM daily_pnl")
+        min_date_row = cursor.fetchone()
+        min_date = min_date_row['min_date'] if min_date_row else None
+
+        if not min_date:
+            return jsonify([])
+
+        if player:
+            cursor.execute("""
+                SELECT date, player_nickname, total_net
+                FROM daily_pnl
+                WHERE player_nickname = ? AND date <= ?
+                ORDER BY date
+            """, (player, end_date))
+        else:
+            cursor.execute("""
+                SELECT date, player_nickname, total_net
+                FROM daily_pnl
+                WHERE date <= ?
+                ORDER BY date
+            """, (end_date,))
+
+        records = [dict(row) for row in cursor.fetchall()]
+
+        # 计算累计
+        cumulative = 0
+        player_cumulative = {}
+        for r in records:
+            if player:
+                cumulative += r['total_net']
+                r['cumulative_net'] = cumulative
+            else:
+                # 汇总所有玩家
+                p = r['player_nickname']
+                if p not in player_cumulative:
+                    player_cumulative[p] = 0
+                player_cumulative[p] += r['total_net']
+                r['cumulative_net'] = player_cumulative[p]
+
+        if player:
+            return jsonify(records)
+        else:
+            # 返回每个玩家的最终累计值
+            result = [{'player_nickname': p, 'cumulative_net': c} for p, c in player_cumulative.items()]
+            return jsonify(result)
+    finally:
+        conn.close()
+
+
+@app.route('/api/pnl/range/selected', methods=['GET'])
+def get_range_selected_players_pnl():
+    """获取指定日期范围内选定玩家的每日PnL（用于多选曲线图）"""
+    start_date = request.args.get('start')
+    end_date = request.args.get('end')
+    players_param = request.args.get('players')  # 逗号分隔的玩家列表
+
+    if not start_date or not end_date:
+        return jsonify({'error': 'start and end dates are required'}), 400
+
+    if not players_param:
+        return jsonify({'error': 'players is required'}), 400
+
+    selected_players = [p.strip() for p in players_param.split(',') if p.strip()]
+    if not selected_players:
+        return jsonify({'error': 'no valid players selected'}), 400
+
+    placeholders = ','.join(['?' for _ in selected_players])
+    conn = db.get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 获取选定玩家在日期范围内的每日数据
+        cursor.execute(f"""
+            SELECT date, player_nickname, total_net
+            FROM daily_pnl
+            WHERE date >= ? AND date <= ? AND player_nickname IN ({placeholders})
+            ORDER BY date, player_nickname
+        """, [start_date, end_date] + selected_players)
+
+        raw_records = [dict(row) for row in cursor.fetchall()]
+
+        # 获取所有日期（没有包含数据的日期）
+        cursor.execute("""
+            SELECT DISTINCT date FROM daily_pnl
+            WHERE date >= ? AND date <= ?
+            ORDER BY date
+        """, (start_date, end_date))
+        all_dates = [row['date'] for row in cursor.fetchall()]
+
+        # 按玩家分组，计算每个玩家的累计
+        player_data = {}
+        for p in selected_players:
+            player_data[p] = []
+
+        for r in raw_records:
+            player = r['player_nickname']
+            player_data[player].append(r)
+
+        # 构建返回数据
+        result = {}
+        for player, records in player_data.items():
+            if not records:
+                continue
+            records.sort(key=lambda x: x['date'])
+            cumulative = 0
+            for r in records:
+                cumulative += r['total_net']
+                r['cumulative_net'] = cumulative
+            result[player] = records
+
+        return jsonify({
+            'dates': all_dates,
+            'players': result
+        })
+    finally:
+        conn.close()
+
+
 @app.route('/api/dates', methods=['GET'])
 def get_dates():
     """获取所有有数据的日期"""
@@ -309,6 +495,37 @@ def get_ledger(date):
 
 
 # ========== 上传接口 ==========
+
+@app.route('/api/ledger/precheck', methods=['POST'])
+def precheck_ledger():
+    """预检查 ledger CSV 文件中的玩家是否已映射"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    file = request.files['file']
+
+    try:
+        stream = io.StringIO(file.stream.read().decode('UTF-8'), newline=None)
+        reader = csv.DictReader(stream)
+
+        aliases = set()
+        for row in reader:
+            alias = row.get('player_nickname', '')
+            if alias:
+                aliases.add(alias)
+
+        # 检查哪些 alias 没有映射
+        unmapped = db.CheckPlayerMapping(list(aliases))
+
+        return jsonify({
+            'unmapped_players': unmapped,
+            'has_unmapped': len(unmapped) > 0
+        })
+
+    except Exception as e:
+        logger.exception(f"预检查失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/ledger/upload', methods=['POST'])
 def upload_ledger():
@@ -335,10 +552,22 @@ def upload_ledger():
         reader = csv.DictReader(stream)
 
         records = []
+        nicknames = set()
+        unmapped_players = []
         for row in reader:
             # 标准化数据
+            alias = row.get('player_nickname', '')
+            # 将 alias 解析为真实的 nickname
+            nickname = db.ResolvePlayerNickname(alias)
+
+            if nickname is None:
+                # alias 不存在，记录下来继续处理其他记录
+                if alias and alias not in unmapped_players:
+                    unmapped_players.append(alias)
+                continue
+
             record = {
-                'player_nickname': row.get('player_nickname', ''),
+                'player_nickname': nickname,
                 'player_id': row.get('player_id', ''),
                 'session_start_at': row.get('session_start_at'),
                 'session_end_at': row.get('session_end_at'),
@@ -348,13 +577,31 @@ def upload_ledger():
                 'net': int(row.get('net', 0) or 0),
             }
             records.append(record)
+            nicknames.add(nickname)
+
+        # 如果有没有映射的玩家，报错
+        if unmapped_players:
+            logger.warning(f"上传文件失败: 以下玩家未找到映射 {unmapped_players}")
+            return jsonify({
+                'error': f"以下玩家未在映射表中: {', '.join(unmapped_players)}",
+                'unmapped_players': unmapped_players
+            }), 400
+
+        if not records:
+            return jsonify({'error': '没有有效的记录'}), 400
+
+        # 检查并自动添加新玩家
+        if nicknames:
+            new_players = db.EnsurePlayersExist(list(nicknames))
+            if new_players:
+                logger.info(f"自动添加新玩家: {new_players}")
 
         # 保存到数据库
         if db.SaveLedger(date, records, file.filename):
             # 计算每日 PnL
             db.CalculateDailyPnl(date)
             logger.info(f"上传成功: {len(records)} 条记录, 日期: {date}")
-            return jsonify({'success': True, 'count': len(records)})
+            return jsonify({'success': True, 'count': len(records), 'new_players': new_players})
 
         logger.error(f"保存失败: {file.filename}, 日期: {date}")
         return jsonify({'error': 'Failed to save data'}), 500
@@ -423,6 +670,14 @@ def index():
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
+    import configparser
+    port = 8080
+    if args.config and os.path.exists(args.config):
+        config = configparser.ConfigParser()
+        config.read(args.config)
+        port = config.getint('server', 'port', fallback=8080)
+    else:
+        port = int(os.environ.get('PORT', 8080))
     print(f"启动德州扑克数据管理系统: http://localhost:{port}")
+    print(f"数据库路径: {db.DB_PATH}")
     app.run(host='0.0.0.0', port=port, debug=True)
