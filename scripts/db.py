@@ -442,20 +442,14 @@ def EnsurePlayersExist(nicknames: List[str]) -> List[str]:
 
 def SaveDailyPnl(date: str, player_nickname: str, total_buy_in: int, total_buy_out: int,
                  total_stack: int, total_net: int, total_sessions: int) -> bool:
-    """保存或累加每日PNL数据"""
+    """保存每日PNL数据（替换已有记录）"""
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # 使用 INSERT ... ON CONFLICT 累加数据
+        # 使用 INSERT OR REPLACE 替换数据
         cursor.execute("""
-            INSERT INTO daily_pnl (date, player_nickname, total_buy_in, total_buy_out, total_stack, total_net, total_sessions)
+            INSERT OR REPLACE INTO daily_pnl (date, player_nickname, total_buy_in, total_buy_out, total_stack, total_net, total_sessions)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(date, player_nickname) DO UPDATE SET
-                total_buy_in = total_buy_in + excluded.total_buy_in,
-                total_buy_out = total_buy_out + excluded.total_buy_out,
-                total_stack = total_stack + excluded.total_stack,
-                total_net = total_net + excluded.total_net,
-                total_sessions = total_sessions + excluded.total_sessions
         """, (date, player_nickname, total_buy_in, total_buy_out, total_stack, total_net, total_sessions))
         conn.commit()
         return True
@@ -594,10 +588,14 @@ def ImportLedgerFiles(date: str, ledger_dir: str, alias_map: Dict[str, str] = No
 
 
 def CalculateDailyPnl(date: str) -> bool:
-    """根据ledger数据计算每日PNL并保存（按昵称合并，累加到现有记录）"""
+    """根据ledger数据计算每日PNL并保存（先删除当天记录再重新计算）"""
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # 先删除当天已有的pnl记录
+        cursor.execute("DELETE FROM daily_pnl WHERE date = ?", (date,))
+        conn.commit()
+
         cursor.execute("""
             SELECT player_nickname,
                    SUM(buy_in) as total_buy_in,

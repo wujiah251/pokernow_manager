@@ -571,10 +571,10 @@ def upload_ledger():
                 'player_id': row.get('player_id', ''),
                 'session_start_at': row.get('session_start_at'),
                 'session_end_at': row.get('session_end_at'),
-                'buy_in': int(row.get('buy_in', 0) or 0),
-                'buy_out': int(row.get('buy_out', 0) or 0),
-                'stack': int(row.get('stack', 0) or 0),
-                'net': int(row.get('net', 0) or 0),
+                'buy_in': int(float(row.get('buy_in', 0) or 0)),
+                'buy_out': int(float(row.get('buy_out', 0) or 0)),
+                'stack': int(float(row.get('stack', 0) or 0)),
+                'net': int(float(row.get('net', 0) or 0)),
             }
             records.append(record)
             nicknames.add(nickname)
