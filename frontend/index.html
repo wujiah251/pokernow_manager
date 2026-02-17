@@ -116,7 +116,237 @@
                 </div>
             </div>
 
-            <!-- Tab 2: PnL 查询 -->
+            <!-- Tab 2: 统计查询 -->
+            <div v-show="currentTab === 2" class="tab-content">
+                <div class="section-header">
+                    <h2>统计查询</h2>
+                    <p class="subtitle">玩家扑克数据统计（VPIP, PFR, 3-Bet 等）, C-Bet</p>
+                </div>
+
+                <!-- 统计筛选和上传 -->
+                <div class="query-panel">
+                    <div class="form-group">
+                        <label>开始日期</label>
+                        <input type="date" v-model="statsStartDate" @change="loadStats">
+                    </div>
+                    <div class="form-group">
+                        <label>结束日期</label>
+                        <input type="date" v-model="statsEndDate" @change="loadStats">
+                    </div>
+                    <div class="form-group">
+                        <label>玩家（可选）</label>
+                        <select v-model="statsPlayer" @change="loadStats">
+                            <option value="">全部玩家</option>
+                            <option v-for="p in pokerPlayers" :key="p" :value="p">{{ p }}</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <button class="btn btn-primary" @click="loadStats">刷新统计</button>
+                    </div>
+                </div>
+
+                <!-- 上传 poker.csv -->
+                <div class="upload-section">
+                    <h3>上传扑克日志</h3>
+                    <div class="upload-form">
+                        <div class="form-group">
+                            <label>日期</label>
+                            <input type="date" v-model="pokerUploadDate">
+                        </div>
+                        <div class="form-group">
+                            <label>选择文件</label>
+                            <input type="file" ref="pokerFile" accept=".csv" @change="handlePokerFileSelect">
+                        </div>
+                        <div class="form-group">
+                            <button class="btn btn-success" @click="uploadPokerFile" :disabled="!pokerFile || !pokerUploadDate || uploadingPoker">
+                                {{ uploadingPoker ? '上传中...' : '上传' }}
+                            </button>
+                        </div>
+                    </div>
+                    <div v-if="pokerUploadResult" class="upload-result" :class="pokerUploadResult.success ? 'success' : 'error'">
+                        {{ pokerUploadResult.message }}
+                    </div>
+                </div>
+
+                <!-- 已处理的日期列表 -->
+                <div class="processed-dates" v-if="pokerDates.length > 0">
+                    <h3>已处理的数据日期</h3>
+                    <div class="date-tags">
+                        <span v-for="date in pokerDates" :key="date" class="date-tag">{{ date }}</span>
+                    </div>
+                    <div class="form-group" style="margin-top: 10px;">
+                        <button class="btn btn-danger" @click="clearPokerData">清除所有数据</button>
+                    </div>
+                </div>
+
+                <!-- 加载状态 -->
+                <div v-if="statsLoading" class="loading">
+                    <div class="loading-spinner"></div>
+                    <p>加载统计数据中...</p>
+                </div>
+
+                <!-- 统计表格 -->
+                <div v-else-if="stats.length > 0" class="stats-container">
+                    <div class="stats-table-wrapper">
+                        <table class="data-table stats-table">
+                            <thead>
+                                <tr>
+                                    <th>玩家</th>
+                                    <th @click="toggleStatsSort('hands')" class="sortable">
+                                        手牌 <span v-if="statsSortField === 'hands'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('vpip')" class="sortable">
+                                        VPIP <span v-if="statsSortField === 'vpip'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('pfr')" class="sortable">
+                                        PFR <span v-if="statsSortField === 'pfr'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('three_bet')" class="sortable">
+                                        3-Bet <span v-if="statsSortField === 'three_bet'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('fold_to_3bet')" class="sortable">
+                                        F3B <span v-if="statsSortField === 'fold_to_3bet'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('c_bet')" class="sortable">
+                                        C-Bet <span v-if="statsSortField === 'c_bet'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('fold_to_cbet')" class="sortable">
+                                        FCB <span v-if="statsSortField === 'fold_to_cbet'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('af')" class="sortable">
+                                        AF <span v-if="statsSortField === 'af'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('wtsd')" class="sortable">
+                                        WTSD <span v-if="statsSortField === 'wtsd'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('wtsd_won')" class="sortable">
+                                        W$SD <span v-if="statsSortField === 'wtsd_won'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('wwsf')" class="sortable">
+                                        WWSF <span v-if="statsSortField === 'wwsf'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                    <th @click="toggleStatsSort('wwsr')" class="sortable">
+                                        WWSR <span v-if="statsSortField === 'wwsr'">{{ statsSortDirection === 'asc' ? '↑' : '↓' }}</span>
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="stat in sortedStats" :key="stat.id" @click="selectedStatsPlayer = stat" class="stats-row">
+                                    <td class="player-name">{{ stat.name }}</td>
+                                    <td class="stat-number">{{ stat.hands }}</td>
+                                    <td :class="['stat-number', getVpipClass(stat.vpip)]">{{ stat.vpip }}%</td>
+                                    <td class="stat-number">{{ stat.pfr }}%</td>
+                                    <td class="stat-number">{{ stat.three_bet }}%</td>
+                                    <td class="stat-number">{{ stat.fold_to_3bet }}%</td>
+                                    <td class="stat-number">{{ stat.c_bet }}%</td>
+                                    <td class="stat-number">{{ stat.fold_to_cbet }}%</td>
+                                    <td :class="['stat-number', getAfClass(stat.af)]">{{ stat.af }}</td>
+                                    <td class="stat-number">{{ stat.wtsd }}%</td>
+                                    <td class="stat-number">{{ stat.wtsd_won }}%</td>
+                                    <td class="stat-number">{{ stat.wwsf }}%</td>
+                                    <td class="stat-number">{{ stat.wwsr }}%</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- 玩家详情弹窗 -->
+                    <div v-if="selectedStatsPlayer" class="modal-overlay" @click.self="selectedStatsPlayer = null">
+                        <div class="modal-content player-detail-modal">
+                            <div class="modal-header">
+                                <div class="player-info">
+                                    <div class="player-avatar">{{ selectedStatsPlayer.name.substring(0, 2).toUpperCase() }}</div>
+                                    <div>
+                                        <h3>{{ selectedStatsPlayer.name }}</h3>
+                                        <p>手牌数: {{ selectedStatsPlayer.hands }}</p>
+                                    </div>
+                                </div>
+                                <button class="close-btn" @click="selectedStatsPlayer = null">&times;</button>
+                            </div>
+                            <div class="modal-body">
+                                <!-- 高级统计数据 -->
+                                <div class="stats-section">
+                                    <h4>高级统计</h4>
+                                    <div class="stats-grid">
+                                        <div class="stat-box">
+                                            <span class="stat-label">4-Bet %</span>
+                                            <span class="stat-value">{{ selectedStatsPlayer.four_bet }}%</span>
+                                        </div>
+                                        <div class="stat-box">
+                                            <span class="stat-label">Fold to 4-Bet</span>
+                                            <span class="stat-value">{{ selectedStatsPlayer.fold_to_4bet }}%</span>
+                                        </div>
+                                        <div class="stat-box">
+                                            <span class="stat-label">5-Bet %</span>
+                                            <span class="stat-value">{{ selectedStatsPlayer.five_bet }}%</span>
+                                        </div>
+                                        <div class="stat-box">
+                                            <span class="stat-label">Fold to 5-Bet</span>
+                                            <span class="stat-value">{{ selectedStatsPlayer.fold_to_5bet }}%</span>
+                                        </div>
+                                        <div class="stat-box">
+                                            <span class="stat-label">Fold to 3-Bet</span>
+                                            <span class="stat-value">{{ selectedStatsPlayer.fold_to_3bet }}%</span>
+                                        </div>
+                                        <div class="stat-box">
+                                            <span class="stat-label">W$SD %</span>
+                                            <span class="stat-value">{{ selectedStatsPlayer.wtsd_won }}%</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- 位置统计 -->
+                                <div class="stats-section" v-if="selectedStatsPlayer.position_stats && Object.keys(selectedStatsPlayer.position_stats).length > 0">
+                                    <h4>位置统计</h4>
+                                    <div class="position-table-wrapper">
+                                        <table class="data-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>位置</th>
+                                                    <th>手牌</th>
+                                                    <th>VPIP</th>
+                                                    <th>PFR</th>
+                                                    <th>3-Bet</th>
+                                                    <th>F3B</th>
+                                                    <th>4-Bet</th>
+                                                    <th>F4B</th>
+                                                    <th>C-Bet</th>
+                                                    <th>FCB</th>
+                                                    <th>AF</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                <tr v-for="(posStat, pos) in selectedStatsPlayer.position_stats" :key="pos">
+                                                    <td class="position-name">{{ pos }}</td>
+                                                    <td>{{ posStat.hands }}</td>
+                                                    <td>{{ posStat.vpip }}%</td>
+                                                    <td>{{ posStat.pfr }}%</td>
+                                                    <td>{{ posStat.three_bet }}%</td>
+                                                    <td>{{ posStat.fold_to_3bet }}%</td>
+                                                    <td>{{ posStat.four_bet }}%</td>
+                                                    <td>{{ posStat.fold_to_4bet }}%</td>
+                                                    <td>{{ posStat.c_bet }}%</td>
+                                                    <td>{{ posStat.fold_to_cbet }}%</td>
+                                                    <td>{{ posStat.af }}</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 无数据 -->
+                <div v-else class="coming-soon">
+                    <div class="coming-soon-icon">📊</div>
+                    <h3>暂无统计数据</h3>
+                    <p>请先上传扑克日志文件</p>
+                </div>
+            </div>
+
+            <!-- Tab 3: PnL 查询 (原来的索引2，现在变成3) -->
             <div v-show="currentTab === 1" class="tab-content">
                 <div class="section-header">
                     <h2>PnL 查询</h2>
@@ -242,8 +472,8 @@
                 </div>
             </div>
 
-            <!-- Tab 3: 对局查询 -->
-            <div v-show="currentTab === 2" class="tab-content">
+            <!-- Tab 4: 对局查询 -->
+            <div v-show="currentTab === 3" class="tab-content">
                 <div class="section-header">
                     <h2>对局查询</h2>
                     <p class="subtitle">按条件筛选对局记录</p>
@@ -255,8 +485,8 @@
                 </div>
             </div>
 
-            <!-- Tab 4: 数据上传 -->
-            <div v-show="currentTab === 3" class="tab-content">
+            <!-- Tab 5: 数据上传 -->
+            <div v-show="currentTab === 4" class="tab-content">
                 <div class="section-header">
                     <h2>数据上传</h2>
                     <p class="subtitle">上传牌局 CSV 文件到数据库</p>
@@ -301,8 +531,8 @@
                 </div>
             </div>
 
-            <!-- Tab 5: 数据删除 -->
-            <div v-show="currentTab === 4" class="tab-content">
+            <!-- Tab 6: 数据删除 -->
+            <div v-show="currentTab === 5" class="tab-content">
                 <div class="section-header">
                     <h2>数据删除</h2>
                     <p class="subtitle">删除指定日期范围内的 PnL 和对局记录</p>

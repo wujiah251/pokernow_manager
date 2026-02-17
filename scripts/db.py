@@ -88,6 +88,25 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_date ON ledger(date)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ledger_player ON ledger(player_nickname)")
 
+    # 预处理手牌表 - 存储处理后的手牌数据（过滤bomb pot和7-2，用nickname替换alias）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS processed_hands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hand_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            player_id TEXT NOT NULL,
+            player_nickname TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            amount REAL DEFAULT 0,
+            street TEXT,
+            raw_log TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_hands_player ON processed_hands(player_nickname)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_hands_date ON processed_hands(date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_hands_hand ON processed_hands(hand_id, date)")
+
     conn.commit()
     conn.close()
     print(f"数据库初始化完成: {DB_PATH}")
@@ -630,3 +649,133 @@ def CalculateDailyPnl(date: str) -> bool:
 
 if __name__ == "__main__":
     init_db()
+
+
+# ========== 预处理手牌数据接口 ==========
+
+def SaveProcessedHands(date: str, hands_data: List[Dict[str, Any]]) -> bool:
+    """
+    保存预处理后的手牌数据（先删除该日期旧数据，再插入新数据）
+
+    Args:
+        date: 日期 (YYYY-MM-DD)
+        hands_data: 手牌数据列表，每个元素包含 hand_id, player_id, player_nickname, action_type, amount, street, raw_log
+
+    Returns:
+        bool: 是否成功
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        # 先删除该日期的旧数据
+        cursor.execute("DELETE FROM processed_hands WHERE date = ?", (date,))
+
+        # 批量插入新手牌数据
+        for hand in hands_data:
+            cursor.execute("""
+                INSERT INTO processed_hands (hand_id, date, player_id, player_nickname, action_type, amount, street, raw_log)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                hand.get('hand_id'),
+                date,
+                hand.get('player_id'),
+                hand.get('player_nickname'),
+                hand.get('action_type'),
+                hand.get('amount', 0),
+                hand.get('street'),
+                hand.get('raw_log')
+            ))
+
+        conn.commit()
+        print(f"成功保存 {len(hands_data)} 条预处理手牌数据, 日期: {date}")
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"保存预处理手牌失败: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def GetProcessedHands(start_date: str = None, end_date: str = None, player_nickname: str = None) -> List[Dict[str, Any]]:
+    """
+    获取预处理后的手牌数据（供统计计算使用）
+
+    Args:
+        start_date: 开始日期 (YYYY-MM-DD)
+        end_date: 结束日期 (YYYY-MM-DD)
+        player_nickname: 玩家昵称筛选
+
+    Returns:
+        List[Dict]: 手牌数据列表
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        query = "SELECT * FROM processed_hands WHERE 1=1"
+        params = []
+
+        if start_date:
+            query += " AND date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND date <= ?"
+            params.append(end_date)
+        if player_nickname:
+            query += " AND player_nickname = ?"
+            params.append(player_nickname)
+
+        query += " ORDER BY date, hand_id"
+
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def GetProcessedDates() -> List[str]:
+    """获取已处理的日期列表"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT DISTINCT date FROM processed_hands ORDER BY date DESC")
+        return [row['date'] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def ClearProcessedHands(start_date: str = None, end_date: str = None) -> int:
+    """
+    清除预处理数据
+
+    Args:
+        start_date: 开始日期（可选）
+        end_date: 结束日期（可选）
+
+    Returns:
+        int: 删除的记录数
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        if start_date and end_date:
+            cursor.execute("DELETE FROM processed_hands WHERE date >= ? AND date <= ?", (start_date, end_date))
+        elif start_date:
+            cursor.execute("DELETE FROM processed_hands WHERE date >= ?", (start_date,))
+        elif end_date:
+            cursor.execute("DELETE FROM processed_hands WHERE date <= ?", (end_date,))
+        else:
+            cursor.execute("DELETE FROM processed_hands")
+
+        deleted = cursor.rowcount
+        conn.commit()
+        print(f"清除预处理数据: {deleted} 条记录")
+        return deleted
+    except Exception as e:
+        conn.rollback()
+        print(f"清除预处理数据失败: {e}")
+        return 0
+    finally:
+        conn.close()
+

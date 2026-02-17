@@ -5,7 +5,7 @@ const app = createApp({
     setup() {
         // ========== 状态 ==========
         const currentTab = ref(0);
-        const tabs = ['玩家映射', 'PnL 查询', '对局查询', '数据上传', '数据删除'];
+        const tabs = ['玩家映射', 'PnL 查询', '统计查询', '对局查询', '数据上传', '数据删除'];
 
         // 玩家数据
         const players = ref([]);
@@ -94,6 +94,33 @@ const app = createApp({
             }, 0);
         });
 
+        // 统计排序
+        const toggleStatsSort = (field) => {
+            if (statsSortField.value === field) {
+                statsSortDirection.value = statsSortDirection.value === 'asc' ? 'desc' : 'asc';
+            } else {
+                statsSortField.value = field;
+                statsSortDirection.value = 'desc';
+            }
+        };
+
+        // 排序后的统计
+        const sortedStats = computed(() => {
+            const records = [...stats.value];
+            const field = statsSortField.value;
+            const dir = statsSortDirection.value;
+
+            records.sort((a, b) => {
+                const valA = a[field];
+                const valB = b[field];
+                if (typeof valA === 'number' && typeof valB === 'number') {
+                    return dir === 'asc' ? valA - valB : valB - valA;
+                }
+                return 0;
+            });
+            return records;
+        });
+
         // 切换排序
         const toggleSort = (column) => {
             if (pnlSortColumn.value === column) {
@@ -140,6 +167,24 @@ const app = createApp({
         const merging = ref(false);
         const mergeResult = ref(null);
 
+        // 统计查询
+        const stats = ref([]);
+        const statsLoading = ref(false);
+        const statsSortField = ref('hands');
+        const statsSortDirection = ref('desc');
+        const selectedStatsPlayer = ref(null);
+        const statsStartDate = ref('');
+        const statsEndDate = ref('');
+        const statsPlayer = ref('');
+        const pokerPlayers = ref([]);
+        const pokerDates = ref([]);
+
+        // Poker 上传
+        const pokerUploadDate = ref('');
+        const pokerFile = ref(null);
+        const uploadingPoker = ref(false);
+        const pokerUploadResult = ref(null);
+
         // ========== 计算属性 ==========
         const canDelete = computed(() => {
             return deleteStartDate.value && deleteEndDate.value && (deletePnl.value || deleteLedger.value);
@@ -156,6 +201,20 @@ const app = createApp({
             const num = Number(value);
             if (isNaN(num)) return '0';
             return num.toLocaleString('zh-CN');
+        };
+
+        // VPIP 颜色
+        const getVpipClass = (vpip) => {
+            if (vpip > 40) return 'text-green-600';
+            if (vpip < 20) return 'text-red-500';
+            return '';
+        };
+
+        // AF 颜色
+        const getAfClass = (af) => {
+            if (af > 3) return 'text-red-600';
+            if (af < 1) return 'text-gray-400';
+            return 'text-blue-600';
         };
 
         const getPnLClass = (value) => {
@@ -312,6 +371,95 @@ const app = createApp({
                 }
             } catch (error) {
                 alert(`删除失败: ${error.message}`);
+            }
+        };
+
+        const loadStats = async () => {
+            statsLoading.value = true;
+            try {
+                let url = '/api/stats';
+                const params = [];
+                if (statsStartDate.value) params.push(`start=${statsStartDate.value}`);
+                if (statsEndDate.value) params.push(`end=${statsEndDate.value}`);
+                if (statsPlayer.value) params.push(`player=${encodeURIComponent(statsPlayer.value)}`);
+                if (params.length > 0) url += '?' + params.join('&');
+                stats.value = await apiGet(url);
+            } catch (error) {
+                console.error('加载统计失败:', error);
+            } finally {
+                statsLoading.value = false;
+            }
+        };
+
+        // 加载 poker 相关数据
+        const loadPokerData = async () => {
+            try {
+                pokerDates.value = await apiGet('/api/poker/dates');
+                pokerPlayers.value = await apiGet('/api/poker/players');
+            } catch (error) {
+                console.error('加载 poker 数据失败:', error);
+            }
+        };
+
+        // 处理文件选择
+        const handlePokerFileSelect = (event) => {
+            pokerFile.value = event.target.files[0];
+            pokerUploadResult.value = null;
+        };
+
+        // 上传 poker 文件
+        const uploadPokerFile = async () => {
+            if (!pokerFile.value || !pokerUploadDate.value) return;
+
+            uploadingPoker.value = true;
+            pokerUploadResult.value = null;
+
+            try {
+                const formData = new FormData();
+                formData.append('file', pokerFile.value);
+                formData.append('date', pokerUploadDate.value);
+
+                const response = await fetch('/api/poker/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    pokerUploadResult.value = {
+                        success: true,
+                        message: `上传成功: ${result.hands} 手牌, ${result.actions} 动作, ${result.players} 位玩家`
+                    };
+                    // 刷新数据
+                    await loadPokerData();
+                    await loadStats();
+                } else {
+                    pokerUploadResult.value = {
+                        success: false,
+                        message: result.error || '上传失败'
+                    };
+                }
+            } catch (error) {
+                pokerUploadResult.value = {
+                    success: false,
+                    message: error.message
+                };
+            } finally {
+                uploadingPoker.value = false;
+            }
+        };
+
+        // 清除 poker 数据
+        const clearPokerData = async () => {
+            if (!confirm('确定要清除所有预处理的手牌数据吗？')) return;
+
+            try {
+                const result = await apiPost('/api/poker/clear', {});
+                alert(`已清除 ${result.deleted} 条记录`);
+                await loadPokerData();
+                await loadStats();
+            } catch (error) {
+                alert('清除失败: ' + error.message);
             }
         };
 
@@ -779,6 +927,7 @@ const app = createApp({
         onMounted(async () => {
             await loadPlayers();
             await loadDates();
+            await loadPokerData();
         });
 
         // 监听 Tab 切换
@@ -786,6 +935,11 @@ const app = createApp({
             if (newTab === 1 && dates.value.length > 0) {
                 await loadPnl();
                 await loadChart();
+            } else if (newTab === 2) {
+                await loadPokerData();
+                if (stats.value.length === 0) {
+                    await loadStats();
+                }
             }
         });
 
@@ -829,17 +983,42 @@ const app = createApp({
             merging,
             mergeResult,
 
+            // 统计
+            stats,
+            statsLoading,
+            statsSortField,
+            statsSortDirection,
+            sortedStats,
+            selectedStatsPlayer,
+            toggleStatsSort,
+            statsStartDate,
+            statsEndDate,
+            statsPlayer,
+            pokerPlayers,
+            pokerDates,
+            pokerUploadDate,
+            pokerFile,
+            uploadingPoker,
+            pokerUploadResult,
+
             // 方法
             formatDate,
             formatMoney,
             getPnLClass,
+            getVpipClass,
+            getAfClass,
             loadPnl,
             loadChart,
+            loadStats,
+            loadPokerData,
             addPlayer,
             mergePlayerData,
             deletePlayerMapping,
             handleFileSelect,
             uploadFile,
+            handlePokerFileSelect,
+            uploadPokerFile,
+            clearPokerData,
             deleteRecords
         };
     }

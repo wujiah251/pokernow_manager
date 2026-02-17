@@ -11,6 +11,9 @@ import logging
 import argparse
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+
+# 添加 scripts 目录到 Python 路径
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 # 解析命令行参数
@@ -659,6 +662,186 @@ def delete_records():
         return jsonify({'error': str(e)}), 500
     finally:
         conn.close()
+
+
+# ========== 统计接口 ==========
+
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """获取扑克统计数据（从预处理数据计算）"""
+    from poker import stats_manager
+
+    start_date = request.args.get('start')
+    end_date = request.args.get('end')
+    player = request.args.get('player')
+
+    try:
+        summary = stats_manager.calculate_stats(start_date, end_date, player)
+        logger.info(f"统计完成: {len(summary)} 位玩家")
+        return jsonify(summary)
+    except Exception as e:
+        logger.exception(f"计算统计失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/poker/upload', methods=['POST'])
+def upload_poker():
+    """上传并处理 poker CSV 文件"""
+    from poker import PokerNowParser, Analyzer
+
+    if 'file' not in request.files:
+        logger.warning("上传文件失败: 没有文件")
+        return jsonify({'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    date = request.form.get('date')
+
+    if not file:
+        logger.warning("上传文件失败: 文件为空")
+        return jsonify({'error': 'No file selected'}), 400
+
+    if not date:
+        logger.warning("上传文件失败: 日期为空")
+        return jsonify({'error': 'Date is required'}), 400
+
+    # 解析 CSV
+    try:
+        logger.info(f"上传 poker 文件: {file.filename}, 日期: {date}")
+
+        # 解析文件
+        parser = PokerNowParser()
+        # 保存上传的文件到临时路径
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as tmp:
+            tmp.write(file.stream.read().decode('utf-8'))
+            tmp_path = tmp.name
+
+        hands = parser.parse_csv(tmp_path)
+        os.unlink(tmp_path)
+
+        logger.info(f"解析完成: {len(hands)} 手牌")
+
+        # 过滤 bomb pot 和 7-2（使用 Analyzer 的逻辑）
+        analyzer = Analyzer()
+        analyzer.process_hands(hands)
+
+        # 获取所有唯一玩家
+        all_players = set()
+        for hand in hands:
+            all_players.update(hand.players.values())
+
+        # 用 nickname 替换 alias（查询 players 表）
+        # 首先从 analyzer.player_aliases 获取映射
+        player_nickname_map = {}
+        for pid, name in analyzer.player_aliases.items():
+            player_nickname_map[pid] = name
+
+        # 也需要处理没有 alias 的玩家 - 从 players 表查找
+        for hand in hands:
+            for pid, name in hand.players.items():
+                if pid not in player_nickname_map:
+                    # 尝试从 players 表查找映射
+                    # name 可能是 alias，查找对应的 nickname
+                    resolved = db.ResolvePlayerNickname(name)
+                    player_nickname_map[pid] = resolved if resolved else name
+
+        # 准备手牌数据 - 获取过滤后的手牌
+        filtered_hands = []
+        for hand in hands:
+            # 使用 hand_id + date 作为唯一键
+            unique_key = f"{hand.hand_id}_{hand.date}"
+            if unique_key in analyzer.processed_hand_ids:
+                filtered_hands.append(hand)
+
+        hands_data = []
+        for hand in filtered_hands:
+            for action in hand.actions:
+                player_nickname = player_nickname_map.get(action.player_id, action.player_name)
+                hands_data.append({
+                    'hand_id': hand.hand_id,
+                    'player_id': action.player_id,
+                    'player_nickname': player_nickname,
+                    'action_type': action.action_type,
+                    'amount': action.amount,
+                    'street': action.street,
+                    'raw_log': action.raw_log
+                })
+
+        # 保存到数据库
+        if db.SaveProcessedHands(date, hands_data):
+            # 获取统计信息
+            player_count = len(set(h['player_nickname'] for h in hands_data))
+            logger.info(f"上传成功: {len(hands_data)} 条动作记录, {len(filtered_hands)} 手牌, {player_count} 位玩家")
+            return jsonify({
+                'success': True,
+                'hands': len(filtered_hands),
+                'actions': len(hands_data),
+                'players': player_count
+            })
+
+        logger.error(f"保存失败: {file.filename}, 日期: {date}")
+        return jsonify({'error': 'Failed to save data'}), 500
+
+    except Exception as e:
+        logger.exception(f"上传文件异常: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/poker/dates', methods=['GET'])
+def get_poker_dates():
+    """获取已处理的日期列表"""
+    try:
+        dates = db.GetProcessedDates()
+        return jsonify(dates)
+    except Exception as e:
+        logger.exception(f"获取日期列表失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/poker/clear', methods=['POST'])
+def clear_poker_data():
+    """清除预处理数据"""
+    data = request.get_json() or {}
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+
+    try:
+        deleted = db.ClearProcessedHands(start_date, end_date)
+        logger.info(f"清除预处理数据: {start_date or '全部'} ~ {end_date or '全部'}, 删除 {deleted} 条")
+        return jsonify({'success': True, 'deleted': deleted})
+    except Exception as e:
+        logger.exception(f"清除预处理数据失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/poker/players', methods=['GET'])
+def get_poker_players():
+    """获取有统计数据的玩家列表"""
+    from poker import stats_manager
+
+    try:
+        players = stats_manager.get_players_with_data()
+        return jsonify(players)
+    except Exception as e:
+        logger.exception(f"获取玩家列表失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/poker/count', methods=['GET'])
+def get_poker_hand_count():
+    """获取手牌数量"""
+    from poker import stats_manager
+
+    start_date = request.args.get('start')
+    end_date = request.args.get('end')
+    player = request.args.get('player')
+
+    try:
+        count = stats_manager.get_hand_count(start_date, end_date, player)
+        return jsonify({'count': count})
+    except Exception as e:
+        logger.exception(f"获取手牌数量失败: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 # ========== 静态文件服务 ==========
