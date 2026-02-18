@@ -116,6 +116,15 @@ const app = createApp({
         const uploading = ref(false);
         const uploadResult = ref(null);
 
+        // Poker 统计查询
+        const pokerDates = ref([]);
+        const pokerPlayers = ref([]);
+        const statsData = ref([]);
+        const statsLoading = ref(false);
+        const statsStartDate = ref('');
+        const statsEndDate = ref('');
+        const statsPlayer = ref('');
+
         // 删除数据
         const deleteStartDate = ref('');
         const deleteEndDate = ref('');
@@ -327,6 +336,46 @@ const app = createApp({
                 }
             } catch (error) {
                 console.error('加载日期失败:', error);
+            }
+        };
+
+        // ========== Poker 统计查询 ==========
+        const loadPokerDates = async () => {
+            try {
+                pokerDates.value = await apiGet('/api/poker/dates');
+                if (pokerDates.value.length > 0) {
+                    statsStartDate.value = pokerDates.value[pokerDates.value.length - 1];
+                    statsEndDate.value = pokerDates.value[0];
+                }
+            } catch (error) {
+                console.error('加载Poker日期失败:', error);
+            }
+        };
+
+        const loadPokerPlayers = async () => {
+            try {
+                pokerPlayers.value = await apiGet('/api/poker/players');
+            } catch (error) {
+                console.error('加载Poker玩家失败:', error);
+            }
+        };
+
+        const queryStats = async () => {
+            statsLoading.value = true;
+            try {
+                let url = '/api/stats';
+                const params = [];
+                if (statsStartDate.value) params.push(`start=${statsStartDate.value}`);
+                if (statsEndDate.value) params.push(`end=${statsEndDate.value}`);
+                if (statsPlayer.value) params.push(`player=${encodeURIComponent(statsPlayer.value)}`);
+                if (params.length > 0) url += '?' + params.join('&');
+
+                statsData.value = await apiGet(url);
+            } catch (error) {
+                console.error('查询统计失败:', error);
+                statsData.value = [];
+            } finally {
+                statsLoading.value = false;
             }
         };
 
@@ -676,7 +725,7 @@ const app = createApp({
             uploadResult.value = null;
 
             try {
-                // 先预检查
+                // Ledger 上传：先预检查
                 const formData = new FormData();
                 formData.append('file', selectedFile.value);
 
@@ -786,6 +835,13 @@ const app = createApp({
             if (newTab === 1 && dates.value.length > 0) {
                 await loadPnl();
                 await loadChart();
+            } else if (newTab === 2) {
+                // 对局查询 Tab - 加载 Poker 日期和玩家列表
+                await loadPokerDates();
+                await loadPokerPlayers();
+                if (pokerDates.value.length > 0) {
+                    await queryStats();
+                }
             }
         });
 
@@ -815,6 +871,17 @@ const app = createApp({
             selectedFile,
             uploading,
             uploadResult,
+            // Poker 统计
+            pokerDates,
+            pokerPlayers,
+            statsData,
+            statsLoading,
+            statsStartDate,
+            statsEndDate,
+            statsPlayer,
+            loadPokerDates,
+            loadPokerPlayers,
+            queryStats,
             deleteStartDate,
             deleteEndDate,
             deletePnl,

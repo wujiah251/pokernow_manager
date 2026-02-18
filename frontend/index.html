@@ -246,12 +246,79 @@
             <div v-show="currentTab === 2" class="tab-content">
                 <div class="section-header">
                     <h2>对局查询</h2>
-                    <p class="subtitle">按条件筛选对局记录</p>
+                    <p class="subtitle">查询扑克统计数据</p>
                 </div>
-                <div class="coming-soon">
-                    <div class="coming-soon-icon">🚧</div>
-                    <h3>开发中</h3>
-                    <p>该功能暂未开放，敬请期待...</p>
+
+                <!-- 查询条件 -->
+                <div class="query-panel">
+                    <div class="form-group">
+                        <label>开始日期</label>
+                        <select v-model="statsStartDate">
+                            <option v-for="date in pokerDates" :key="date" :value="date">{{ date }}</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>结束日期</label>
+                        <select v-model="statsEndDate">
+                            <option v-for="date in pokerDates" :key="date" :value="date">{{ date }}</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>玩家（可选）</label>
+                        <select v-model="statsPlayer">
+                            <option value="">全部玩家</option>
+                            <option v-for="p in pokerPlayers" :key="p" :value="p">{{ p }}</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" @click="queryStats" :disabled="statsLoading">
+                        {{ statsLoading ? '查询中...' : '查询' }}
+                    </button>
+                </div>
+
+                <!-- 统计表格 -->
+                <div v-if="statsLoading" class="loading">加载中...</div>
+                <div v-else-if="statsData.length === 0" class="empty-state">
+                    <p>暂无数据，请先上传扑克日志</p>
+                </div>
+                <div v-else class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>玩家</th>
+                                <th>手牌数</th>
+                                <th>VPIP%</th>
+                                <th>PFR%</th>
+                                <th>WTSD%</th>
+                                <th>C-bet%</th>
+                                <th>3-bet%</th>
+                                <th>4-bet%</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="stat in statsData" :key="stat.name">
+                                <td>{{ stat.name }}</td>
+                                <td>{{ stat.hands }}</td>
+                                <td>{{ stat.vpip }}%</td>
+                                <td>{{ stat.pfr }}%</td>
+                                <td>{{ stat.wtsd }}%</td>
+                                <td>{{ stat.c_bet }}%</td>
+                                <td>{{ stat.three_bet }}%</td>
+                                <td>{{ stat.four_bet }}%</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="stats-help">
+                    <h4>统计指标说明</h4>
+                    <ul>
+                        <li><b>VPIP%</b> - 主动投入筹码率（除大小盲外）</li>
+                        <li><b>PFR%</b> - 翻前加注率</li>
+                        <li><b>WTSD%</b> - 进入摊牌率</li>
+                        <li><b>C-bet%</b> - 持续下注率（翻牌圈作为翻前加注者下注）</li>
+                        <li><b>3-bet%</b> - 3-bet 率（翻前再次加注）</li>
+                        <li><b>4-bet%</b> - 4-bet 率（3-bet 后再加注）</li>
+                    </ul>
                 </div>
             </div>
 

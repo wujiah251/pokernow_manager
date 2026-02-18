@@ -497,6 +497,71 @@ body {
     margin-right: 8px;
 }
 
+/* ========== 上传类型选择器 ========== */
+.upload-type-selector {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 24px;
+    padding: 16px;
+    background: var(--off-white);
+    border-radius: 8px;
+}
+
+.upload-type-selector label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: 500;
+}
+
+.upload-type-selector input[type="radio"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--primary);
+}
+
+/* ========== 统计帮助 ========== */
+.stats-help {
+    margin-top: 24px;
+    padding: 16px;
+    background: var(--off-white);
+    border-radius: 8px;
+}
+
+.stats-help h4 {
+    margin-bottom: 12px;
+    color: var(--text);
+    font-size: 15px;
+}
+
+.stats-help ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.stats-help li {
+    padding: 4px 0;
+    font-size: 14px;
+    color: var(--text-light);
+}
+
+.stats-help li::before {
+    content: "•";
+    color: var(--gold);
+    margin-right: 8px;
+}
+
+/* ========== 空状态 ========== */
+.empty-state {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--text-light);
+    font-size: 15px;
+}
+
 /* ========== 删除面板 ========== */
 .delete-panel {
     background: var(--white);
