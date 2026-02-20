@@ -484,6 +484,59 @@ def get_dates():
     return jsonify(dates)
 
 
+# ========== Hand Tags 接口 ==========
+
+@app.route('/api/hand_tags/rebuild', methods=['POST'])
+def rebuild_hand_tags():
+    """重建 hand_tags 表"""
+    try:
+        logger.info("开始重建 hand_tags")
+        count = db.rebuild_hand_tags()
+        logger.info(f"重建完成，共 {count} 条标签")
+        return jsonify({'success': True, 'count': count})
+    except Exception as e:
+        logger.exception(f"重建 hand_tags 失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/hand_tags/count', methods=['GET'])
+def get_hand_tags_count():
+    """查询满足条件的 hand 数量"""
+    nickname = request.args.get('nickname')
+    tags_param = request.args.get('tags')
+    operator = request.args.get('operator', 'AND')
+
+    if not nickname:
+        return jsonify({'error': 'nickname is required'}), 400
+
+    tags = []
+    if tags_param:
+        tags = [t.strip() for t in tags_param.split(',') if t.strip()]
+
+    try:
+        count = db.query_player_hands(nickname, tags, operator)
+        return jsonify({'nickname': nickname, 'count': count, 'tags': tags, 'operator': operator})
+    except Exception as e:
+        logger.exception(f"查询 hand_tags 失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/players/stats', methods=['GET'])
+def get_player_stats():
+    """获取玩家统计指标"""
+    nickname = request.args.get('nickname')
+
+    if not nickname:
+        return jsonify({'error': 'nickname is required'}), 400
+
+    try:
+        stats = db.get_player_stats(nickname)
+        return jsonify({'nickname': nickname, 'stats': stats})
+    except Exception as e:
+        logger.exception(f"查询玩家统计失败: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 # ========== 对局记录接口 ==========
 
 @app.route('/api/ledger/<date>', methods=['GET'])

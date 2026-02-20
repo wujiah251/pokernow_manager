@@ -91,6 +91,9 @@ def init_db():
     # 初始化 hands 和 hand_players 表
     _init_hands_tables(conn, cursor)
 
+    # 初始化 hand_tags 表
+    init_hand_tags_table()
+
     conn.commit()
     conn.close()
     print(f"数据库初始化完成: {DB_PATH}")
@@ -1172,5 +1175,506 @@ def get_hands_by_date(date: str) -> List[Dict]:
         """, (date,))
 
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+# ========== Hand Tags 系统 ==========
+
+def init_hand_tags_table():
+    """初始化 hand_tags 表"""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS hand_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hand_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            player_nickname TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            UNIQUE(hand_id, player_nickname, tag)
+        )
+    """)
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_hand_tags_player ON hand_tags(player_nickname)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_hand_tags_hand ON hand_tags(hand_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_hand_tags_tag ON hand_tags(tag)")
+
+    conn.commit()
+    conn.close()
+    print("hand_tags 表初始化完成")
+
+
+def match_tags(action_line: Dict, hand_players: List[Dict], hand_id: int, date: str) -> List[tuple]:
+    """
+    为一手牌的所有玩家匹配所有标签
+
+    Args:
+        action_line: hands 表中的 action_line JSON
+        hand_players: hand_players 表中该手牌的所有玩家列表
+        hand_id: 手牌 ID
+        date: 日期
+
+    Returns:
+        List[tuple]: [(hand_id, date, player_nickname, tag), ...]
+    """
+    results = []
+
+    # 获取参与玩家列表
+    players_in_hand = [hp['player_nickname'] for hp in hand_players]
+    if not players_in_hand:
+        return results
+
+    # 解析各阶段动作
+    preflop = action_line.get("preflop", [])
+    flop = action_line.get("flop", [])
+    turn = action_line.get("turn", [])
+    river = action_line.get("river", [])
+
+    # 统计翻前动作
+    preflop_actions = {p: [] for p in players_in_hand}
+    for action in preflop:
+        player = action.get("player")
+        if player in preflop_actions:
+            preflop_actions[player].append(action)
+
+    # 统计各阶段动作
+    flop_actions = {p: [] for p in players_in_hand}
+    for action in flop:
+        player = action.get("player")
+        if player in flop_actions:
+            flop_actions[player].append(action)
+
+    turn_actions = {p: [] for p in players_in_hand}
+    for action in turn:
+        player = action.get("player")
+        if player in turn_actions:
+            turn_actions[player].append(action)
+
+    river_actions = {p: [] for p in players_in_hand}
+    for action in river:
+        player = action.get("player")
+        if player in river_actions:
+            river_actions[player].append(action)
+
+    # 判断每个玩家在各阶段是否有 fold
+    preflop_folded = set()
+    flop_folded = set()
+    turn_folded = set()
+    river_folded = set()
+
+    for player in players_in_hand:
+        # preflop fold
+        for action in preflop_actions[player]:
+            if action.get("action") == "fold":
+                preflop_folded.add(player)
+
+        # flop fold
+        for action in flop_actions[player]:
+            if action.get("action") == "fold":
+                flop_folded.add(player)
+
+        # turn fold
+        for action in turn_actions[player]:
+            if action.get("action") == "fold":
+                turn_folded.add(player)
+
+        # river fold
+        for action in river_actions[player]:
+            if action.get("action") == "fold":
+                river_folded.add(player)
+
+    # 识别 preflop_open_raise (第一个 raise)
+    preflop_raises = [a for a in preflop if a.get("action") == "raise"]
+    preflop_open_raiser = preflop_raises[0].get("player") if preflop_raises else None
+
+    # 识别 preflop_last_raiser (最后一个 raise)
+    preflop_last_raiser = preflop_raises[-1].get("player") if preflop_raises else None
+
+    # 识别 preflop_3bet (第2个 raise)
+    preflop_3bettor = preflop_raises[1].get("player") if len(preflop_raises) >= 2 else None
+
+    # 识别 preflop_4bet (第3个 raise)
+    preflop_4bettor = preflop_raises[2].get("player") if len(preflop_raises) >= 3 else None
+
+    # 识别 blind 类型
+    blinds = {p: None for p in players_in_hand}
+    for action in preflop:
+        if action.get("action") == "blind":
+            player = action.get("player")
+            blinds[player] = action.get("blind_type")
+
+    # 识别 flop_cbet (preflop_last_raiser 且 flop 第一个 bet/raise)
+    flop_bet_or_raise = None
+    for action in flop:
+        if action.get("action") in ("bet", "raise"):
+            flop_bet_or_raise = action.get("player")
+            break
+
+    # 为每个玩家匹配标签
+    for player in players_in_hand:
+        # === Preflop 标签 ===
+
+        # participated
+        results.append((hand_id, date, player, "participated"))
+
+        # preflop_sb / preflop_bb
+        blind_type = blinds.get(player)
+        if blind_type == "small":
+            results.append((hand_id, date, player, "preflop_sb"))
+        elif blind_type == "big":
+            results.append((hand_id, date, player, "preflop_bb"))
+        # 只有一个 blind 时默认为大盲
+        elif blind_type is not None and blind_type not in ("small", "big"):
+            results.append((hand_id, date, player, "preflop_bb"))
+
+        # preflop 动作标签
+        for action in preflop_actions[player]:
+            act = action.get("action")
+            if act == "call":
+                results.append((hand_id, date, player, "preflop_call"))
+            elif act == "raise":
+                results.append((hand_id, date, player, "preflop_raise"))
+            elif act == "allin":
+                results.append((hand_id, date, player, "preflop_allin"))
+            elif act == "fold":
+                results.append((hand_id, date, player, "preflop_fold"))
+
+        # voluntarily_put_in: 非 blind 的 call/bet/raise/allin
+        for action in preflop_actions[player]:
+            act = action.get("action")
+            if act in ("call", "bet", "raise", "allin"):
+                # 排除 blind
+                if action.get("blind_type") is None:
+                    results.append((hand_id, date, player, "voluntarily_put_in"))
+                    break
+
+        # preflop_open_raise
+        if player == preflop_open_raiser:
+            results.append((hand_id, date, player, "preflop_open_raise"))
+
+        # preflop_last_raiser
+        if player == preflop_last_raiser:
+            results.append((hand_id, date, player, "preflop_last_raiser"))
+
+        # preflop_3bet
+        if player == preflop_3bettor:
+            results.append((hand_id, date, player, "preflop_3bet"))
+
+        # preflop_4bet
+        if player == preflop_4bettor:
+            results.append((hand_id, date, player, "preflop_4bet"))
+
+        # === Flop 标签 ===
+
+        # saw_flop: 没有在 preflop fold 且有动作
+        if player not in preflop_folded:
+            # 有 flop 动作（任意非 fold）
+            has_flop_action = any(action.get("action") != "fold" for action in flop_actions[player])
+            if has_flop_action or (flop and player not in flop_folded):
+                results.append((hand_id, date, player, "saw_flop"))
+
+        # flop 动作标签
+        for action in flop_actions[player]:
+            act = action.get("action")
+            if act == "bet":
+                results.append((hand_id, date, player, "flop_bet"))
+            elif act == "raise":
+                results.append((hand_id, date, player, "flop_raise"))
+            elif act == "call":
+                results.append((hand_id, date, player, "flop_call"))
+            elif act == "fold":
+                results.append((hand_id, date, player, "flop_fold"))
+            elif act == "check":
+                results.append((hand_id, date, player, "flop_check"))
+
+        # flop_cbet: preflop_last_raiser 且 flop 第一个 bet/raise
+        if player == preflop_last_raiser and player == flop_bet_or_raise:
+            results.append((hand_id, date, player, "flop_cbet"))
+
+        # flop_donk: 非 preflop_last_raiser 在 flop 主动 bet
+        if player != preflop_last_raiser:
+            for action in flop_actions[player]:
+                if action.get("action") == "bet":
+                    results.append((hand_id, date, player, "flop_donk"))
+                    break
+
+        # === Turn 标签 ===
+
+        # saw_turn: 看到 turn（进入翻牌圈且在转牌圈没有 fold）
+        player_tags = [t[3] for t in results if t[2] == player]
+        if "saw_flop" in player_tags:
+            if turn and player not in turn_folded:
+                results.append((hand_id, date, player, "saw_turn"))
+
+        # turn 动作标签
+        for action in turn_actions[player]:
+            act = action.get("action")
+            if act == "bet":
+                results.append((hand_id, date, player, "turn_bet"))
+            elif act == "raise":
+                results.append((hand_id, date, player, "turn_raise"))
+            elif act == "call":
+                results.append((hand_id, date, player, "turn_call"))
+            elif act == "fold":
+                results.append((hand_id, date, player, "turn_fold"))
+            elif act == "check":
+                results.append((hand_id, date, player, "turn_check"))
+
+        # === River 标签 ===
+
+        # saw_river: 看到 river（进入转牌圈且在河牌圈没有 fold）
+        player_tags = [t[3] for t in results if t[2] == player]
+        if "saw_turn" in player_tags:
+            if river and player not in river_folded:
+                results.append((hand_id, date, player, "saw_river"))
+
+        # river 动作标签
+        for action in river_actions[player]:
+            act = action.get("action")
+            if act == "bet":
+                results.append((hand_id, date, player, "river_bet"))
+            elif act == "raise":
+                results.append((hand_id, date, player, "river_raise"))
+            elif act == "call":
+                results.append((hand_id, date, player, "river_call"))
+            elif act == "fold":
+                results.append((hand_id, date, player, "river_fold"))
+
+        # saw_showdown: 看到摊牌（进入 river 且没有 fold）
+        player_tags = [t[3] for t in results if t[2] == player]
+        if "saw_river" in player_tags:
+            # river 没有 fold
+            if player not in river_folded:
+                results.append((hand_id, date, player, "saw_showdown"))
+
+    # === 全局标签（需要从 hand_players 获取 is_winner）===
+
+    # 找出赢家和输家
+    winners = {hp['player_nickname'] for hp in hand_players if hp.get('is_winner')}
+
+    for player in players_in_hand:
+        player_tags = [t[3] for t in results if t[2] == player]
+
+        # won_at_showdown
+        if player in winners and "saw_showdown" in player_tags:
+            results.append((hand_id, date, player, "won_at_showdown"))
+
+        # lost_at_showdown: saw_showdown but not winner
+        if "saw_showdown" in player_tags and player not in winners:
+            results.append((hand_id, date, player, "lost_at_showdown"))
+
+    return results
+
+
+def rebuild_hand_tags() -> int:
+    """重建所有 hand_tags"""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 先清空现有数据
+    cursor.execute("DELETE FROM hand_tags")
+
+    # 获取所有手牌
+    cursor.execute("""
+        SELECT h.id, h.date, h.action_line, GROUP_CONCAT(hp.player_nickname) as players
+        FROM hands h
+        LEFT JOIN hand_players hp ON h.id = hp.hand_id
+        GROUP BY h.id
+    """)
+
+    hands = cursor.fetchall()
+
+    total_tags = 0
+    for hand in hands:
+        hand_id = hand['id']
+        date = hand['date']
+        action_line_str = hand['action_line']
+
+        if not action_line_str:
+            continue
+
+        try:
+            action_line = json.loads(action_line_str)
+        except:
+            continue
+
+        # 获取该手牌的所有玩家
+        cursor.execute("SELECT * FROM hand_players WHERE hand_id = ?", (hand_id,))
+        hand_players = [dict(row) for row in cursor.fetchall()]
+
+        # 匹配标签
+        tag_records = match_tags(action_line, hand_players, hand_id, date)
+
+        # 插入数据库
+        for record in tag_records:
+            try:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO hand_tags (hand_id, date, player_nickname, tag)
+                    VALUES (?, ?, ?, ?)
+                """, record)
+            except:
+                pass
+
+        total_tags += len(tag_records)
+
+    conn.commit()
+    conn.close()
+    print(f"重建 hand_tags 完成，共 {total_tags} 条标签")
+    return total_tags
+
+
+def query_player_hands(nickname: str, tags: List[str] = None, operator: str = "AND") -> int:
+    """
+    查询满足条件的 hand 数量
+
+    Args:
+        nickname: 玩家昵称
+        tags: 标签列表
+        operator: AND 或 OR
+
+    Returns:
+        int: 满足条件的手牌数
+    """
+    if not nickname:
+        return 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        if not tags:
+            # 没有标签，返回该玩家的总手牌数
+            cursor.execute("""
+                SELECT COUNT(DISTINCT hand_id) as cnt
+                FROM hand_tags
+                WHERE player_nickname = ? AND tag = 'participated'
+            """, (nickname,))
+        else:
+            # 根据 operator 构建查询
+            if operator == "AND":
+                # 所有标签都满足的手牌
+                placeholders = ','.join(['?' for _ in tags])
+                cursor.execute(f"""
+                    SELECT COUNT(*) as cnt FROM (
+                        SELECT hand_id
+                        FROM hand_tags
+                        WHERE player_nickname = ? AND tag IN ({placeholders})
+                        GROUP BY hand_id
+                        HAVING COUNT(DISTINCT tag) = ?
+                    )
+                """, [nickname] + tags + [len(tags)])
+            else:
+                # 任意标签满足的手牌
+                placeholders = ','.join(['?' for _ in tags])
+                cursor.execute(f"""
+                    SELECT COUNT(DISTINCT hand_id) as cnt
+                    FROM hand_tags
+                    WHERE player_nickname = ? AND tag IN ({placeholders})
+                """, [nickname] + tags)
+
+        result = cursor.fetchone()
+        return result['cnt'] if result else 0
+    finally:
+        conn.close()
+
+
+def get_player_stats(nickname: str) -> Dict:
+    """
+    获取玩家统计指标
+
+    Returns:
+        Dict: {
+            "participated": int,
+            "voluntarily_put_in": int,
+            "preflop_raise": int,
+            "preflop_open_raise": int,
+            "preflop_3bet": int,
+            "preflop_last_raiser": int,
+            "saw_flop": int,
+            "flop_cbet": int,
+            "saw_showdown": int,
+            "won_at_showdown": int,
+            "lost_at_showdown": int,
+            "VPIP": float,
+            "PFR": float,
+            "3Bet": float,
+            "CBet": float,
+            "WTSD": float,
+            "W$SD": float
+        }
+    """
+    if not nickname:
+        return {}
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 获取各标签数量
+        def get_tag_count(tag: str) -> int:
+            cursor.execute("""
+                SELECT COUNT(*) as cnt FROM hand_tags
+                WHERE player_nickname = ? AND tag = ?
+            """, (nickname, tag))
+            result = cursor.fetchone()
+            return result['cnt'] if result else 0
+
+        stats = {
+            "participated": get_tag_count("participated"),
+            "voluntarily_put_in": get_tag_count("voluntarily_put_in"),
+            "preflop_raise": get_tag_count("preflop_raise"),
+            "preflop_open_raise": get_tag_count("preflop_open_raise"),
+            "preflop_3bet": get_tag_count("preflop_3bet"),
+            "preflop_last_raiser": get_tag_count("preflop_last_raiser"),
+            "saw_flop": get_tag_count("saw_flop"),
+            "flop_cbet": get_tag_count("flop_cbet"),
+            "saw_showdown": get_tag_count("saw_showdown"),
+            "won_at_showdown": get_tag_count("won_at_showdown"),
+            "lost_at_showdown": get_tag_count("lost_at_showdown"),
+        }
+
+        # 计算比率
+        # VPIP = voluntarily_put_in / participated
+        if stats["participated"] > 0:
+            stats["VPIP"] = round(stats["voluntarily_put_in"] / stats["participated"] * 100, 1)
+        else:
+            stats["VPIP"] = 0
+
+        # PFR = preflop_raise / participated
+        if stats["participated"] > 0:
+            stats["PFR"] = round(stats["preflop_raise"] / stats["participated"] * 100, 1)
+        else:
+            stats["PFR"] = 0
+
+        # 3-Bet = preflop_3bet / preflop_open_raise（遇到 open raise 的玩家）
+        # 注意：这里的分母应该是 open raise 后还在牌局的玩家
+        # 简化：使用 preflop_open_raise 作为分母
+        if stats["preflop_open_raise"] > 0:
+            stats["3Bet"] = round(stats["preflop_3bet"] / stats["preflop_open_raise"] * 100, 1)
+        else:
+            stats["3Bet"] = 0
+
+        # C-Bet = flop_cbet / preflop_last_raiser（翻前最后加注者且看到 flop）
+        # 简化：使用 preflop_last_raiser 作为分母
+        if stats["preflop_last_raiser"] > 0:
+            stats["CBet"] = round(stats["flop_cbet"] / stats["preflop_last_raiser"] * 100, 1)
+        else:
+            stats["CBet"] = 0
+
+        # WTSD = saw_showdown / voluntarily_put_in
+        if stats["voluntarily_put_in"] > 0:
+            stats["WTSD"] = round(stats["saw_showdown"] / stats["voluntarily_put_in"] * 100, 1)
+        else:
+            stats["WTSD"] = 0
+
+        # W$SD = won_at_showdown / saw_showdown
+        if stats["saw_showdown"] > 0:
+            stats["W$SD"] = round(stats["won_at_showdown"] / stats["saw_showdown"] * 100, 1)
+        else:
+            stats["W$SD"] = 0
+
+        return stats
     finally:
         conn.close()
