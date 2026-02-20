@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Start
 
 ```
-python script/api.py -c config.ini
+python scripts/api.py -c config.ini
 ```
 
 ## Directory Structure
