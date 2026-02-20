@@ -12,6 +12,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [后端接口文档](./docs/backend.md)
 - [数据库文档](./docs/db.md)
 
+## Start
+
+```
+python script/api.py -c config.ini
+```
+
 ## Directory Structure
 
 ```
